@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 PANWATCH_ROOT = Path(__file__).resolve().parents[1] / "integrations" / "panwatch"
@@ -57,7 +57,7 @@ def _all_frames(now: datetime, *, execution_eligible: bool = True):
 
 
 def test_macro_conflict_is_warning_not_execution_block():
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     quote = XAUQuote(
         bid=4244.0,
         ask=4244.3,
@@ -79,7 +79,7 @@ def test_macro_conflict_is_warning_not_execution_block():
 
 
 def test_execution_mode_blocks_research_proxy_bars_and_missing_spot_quote():
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     result = XAUIntradayEngine(require_execution_data=True).analyze(
         _all_frames(now, execution_eligible=False),
         quote=None,
@@ -95,7 +95,7 @@ def test_execution_mode_blocks_research_proxy_bars_and_missing_spot_quote():
 
 
 def test_high_impact_event_gate_blocks_otherwise_valid_setup():
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     quote = XAUQuote(
         bid=4244.0,
         ask=4244.2,
