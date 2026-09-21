@@ -15,6 +15,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
 import threading
 from dataclasses import dataclass
 from typing import Any
@@ -350,6 +352,27 @@ class AhmedToolboxGateway:
                 },
             },
             {
+                "name": "reach_web_search",
+                "description": (
+                    "Search the public web through Agent Reach's documented Exa "
+                    "route (mcporter -> exa.web_search_exa). Read-only discovery tool."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["query"],
+                    "properties": {
+                        "query": {"type": "string", "minLength": 1, "maxLength": 1000},
+                        "num_results": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 10,
+                            "default": 5,
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "reach_read_url",
                 "description": (
                     "Read a public HTTP(S) page through Agent Reach's Jina Reader "
@@ -409,6 +432,50 @@ class AhmedToolboxGateway:
         if name == "reach_doctor":
             data = self.agent_reach.doctor()
             return self._text_result(json.dumps(data, ensure_ascii=False, default=str))
+
+        if name == "reach_web_search":
+            query = str(arguments.get("query") or "").strip()
+            if not query:
+                return self._text_result("query is required", is_error=True)
+            if len(query) > 1000:
+                return self._text_result("query exceeds 1000 characters", is_error=True)
+            try:
+                num_results = int(arguments.get("num_results") or 5)
+            except (TypeError, ValueError):
+                return self._text_result("num_results must be an integer", is_error=True)
+            num_results = max(1, min(num_results, 10))
+            mcporter = shutil.which("mcporter")
+            if not mcporter:
+                return self._text_result(
+                    "mcporter is not installed; Agent Reach Exa search is unavailable",
+                    is_error=True,
+                )
+            try:
+                completed = subprocess.run(
+                    [
+                        mcporter,
+                        "call",
+                        "exa.web_search_exa",
+                        f"query={query}",
+                        f"numResults={num_results}",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=45,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                return self._text_result(
+                    f"Agent Reach web search failed: {exc}",
+                    is_error=True,
+                )
+            output = (completed.stdout or "").strip()
+            if completed.returncode != 0:
+                error = (completed.stderr or output or "mcporter search failed").strip()
+                return self._text_result(error[:20000], is_error=True)
+            if not output:
+                return self._text_result("Agent Reach web search returned no output", is_error=True)
+            return self._text_result(output[:100000])
 
         if name == "reach_read_url":
             url = str(arguments.get("url") or "").strip()
