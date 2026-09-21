@@ -1,13 +1,13 @@
 """MCP gateway that composes Agent Reach with remote MCP servers.
 
-The gateway deliberately keeps credentials and transport configuration in the
-host environment. Remote tools are namespaced (for example
-``scrapling__fetch``) so that two MCP servers may expose the same tool name
-without collisions.
+The gateway keeps credentials and transport configuration in the host
+environment. Remote tools are namespaced (for example ``scrapling__fetch``)
+so that two MCP servers may expose the same tool name without collisions.
 
-This module does not make Agent Reach pretend to be the underlying source.
-Agent Reach remains a discovery/access capability layer; remote MCP servers
-remain the owners of their returned data.
+Remote MCP tools are deny-by-default unless an allowlist is configured. A small
+read-only default allowlist is provided for Scrapling one-shot GET/browser
+fetchers. Stateful sessions and arbitrary HTTP methods are intentionally not
+exposed by default.
 """
 
 from __future__ import annotations
@@ -27,9 +27,18 @@ from agent_reach.channels.web import WebChannel
 _MAX_REMOTE_RESPONSE_BYTES = 5 * 1024 * 1024
 _DEFAULT_TIMEOUT_SECONDS = 30.0
 _PREFIX_RE = re.compile(r"[^a-zA-Z0-9_-]+")
-_LOCAL_TOOLS = {
-    "reach_doctor",
-    "reach_read_url",
+
+_DEFAULT_REMOTE_ALLOWLISTS: dict[str, tuple[str, ...]] = {
+    # Read-only one-shot tools. `make_request` is excluded because its schema
+    # also permits POST/PUT/DELETE. Session tools are excluded because they
+    # mutate remote browser/request-session state.
+    "scrapling": (
+        "bulk_get",
+        "fetch",
+        "bulk_fetch",
+        "stealthy_fetch",
+        "bulk_stealthy_fetch",
+    ),
 }
 
 
@@ -44,6 +53,7 @@ class RemoteMCPConfig:
     token: str = ""
     timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS
     protocol_version: str = "2024-11-05"
+    allow_tools: tuple[str, ...] = ()
 
     @property
     def prefix(self) -> str:
@@ -51,6 +61,9 @@ class RemoteMCPConfig:
         if not value:
             raise ValueError("remote MCP name must contain at least one safe character")
         return value
+
+    def allows(self, tool_name: str) -> bool:
+        return tool_name in set(self.allow_tools)
 
 
 class RemoteMCPClient:
@@ -61,8 +74,11 @@ class RemoteMCPClient:
         self._session = session or requests.Session()
         self._session_id: str | None = None
         self._initialized = False
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._next_id = 1
+
+    def is_tool_allowed(self, tool_name: str) -> bool:
+        return self.config.allows(tool_name)
 
     def _request_id(self) -> int:
         with self._lock:
@@ -90,8 +106,6 @@ class RemoteMCPClient:
                 raise RemoteMCPError("remote MCP returned a non-object JSON payload")
             return payload
 
-        # Streamable HTTP may return one or more SSE events. Pick the JSON-RPC
-        # response matching our request id, falling back to the first JSON object.
         fallback: dict[str, Any] | None = None
         for line in text.splitlines():
             if not line.startswith("data:"):
@@ -166,9 +180,34 @@ class RemoteMCPClient:
             ) from exc
 
         if "error" in decoded:
-            err = decoded.get("error")
-            raise RemoteMCPError(f"{self.config.name} MCP error: {err}")
+            raise RemoteMCPError(
+                f"{self.config.name} MCP error: {decoded.get('error')}"
+            )
         return decoded
+
+    def _notify_initialized(self) -> None:
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {},
+        }
+        try:
+            response = self._session.post(
+                self.config.url,
+                headers=self._headers(),
+                json=payload,
+                timeout=self.config.timeout_seconds,
+                stream=False,
+            )
+            if response.status_code >= 400:
+                return
+            session_id = response.headers.get("Mcp-Session-Id") or response.headers.get(
+                "mcp-session-id"
+            )
+            if session_id:
+                self._session_id = session_id
+        except requests.RequestException:
+            return
 
     def ensure_initialized(self) -> None:
         if self._initialized:
@@ -176,6 +215,7 @@ class RemoteMCPClient:
         with self._lock:
             if self._initialized:
                 return
+            initialized = False
             try:
                 self.rpc(
                     "initialize",
@@ -188,11 +228,14 @@ class RemoteMCPClient:
                         },
                     },
                 )
+                initialized = True
             except RemoteMCPError:
                 # Some small MCP servers allow tools/list directly and do not
-                # implement initialize. We deliberately fail open here; the
-                # actual tools/list call remains authoritative.
+                # implement initialize. The actual tools/list call remains
+                # authoritative, so this compatibility fallback is acceptable.
                 pass
+            if initialized:
+                self._notify_initialized()
             self._initialized = True
 
     def list_tools(self) -> list[dict[str, Any]]:
@@ -205,6 +248,10 @@ class RemoteMCPClient:
         return [tool for tool in tools if isinstance(tool, dict)]
 
     def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if not self.is_tool_allowed(name):
+            raise RemoteMCPError(
+                f"{self.config.name} MCP tool is not allowlisted: {name}"
+            )
         self.ensure_initialized()
         payload = self.rpc(
             "tools/call",
@@ -248,12 +295,27 @@ class AhmedToolboxGateway:
             token_env = str(item.get("token_env") or "")
             if token_env:
                 token = os.environ.get(token_env, token)
+
+            prefix = _PREFIX_RE.sub("_", str(name).strip()).strip("_").lower()
+            raw_allow_tools = item.get("allow_tools")
+            if raw_allow_tools is None:
+                allow_tools = _DEFAULT_REMOTE_ALLOWLISTS.get(prefix, ())
+            elif isinstance(raw_allow_tools, list) and all(
+                isinstance(tool, str) for tool in raw_allow_tools
+            ):
+                allow_tools = tuple(raw_allow_tools)
+            else:
+                raise ValueError(
+                    f"remote MCP {name!r} allow_tools must be a list of tool names"
+                )
+
             remote_config = RemoteMCPConfig(
                 name=str(name),
                 url=str(item["url"]),
                 token=token,
                 timeout_seconds=float(item.get("timeout_seconds") or _DEFAULT_TIMEOUT_SECONDS),
                 protocol_version=str(item.get("protocol_version") or "2024-11-05"),
+                allow_tools=allow_tools,
             )
             prefix = remote_config.prefix
             if prefix in remotes:
@@ -306,7 +368,7 @@ class AhmedToolboxGateway:
         for prefix, remote in sorted(self.remotes.items()):
             for tool in remote.list_tools():
                 original = str(tool.get("name") or "").strip()
-                if not original:
+                if not original or not remote.is_tool_allowed(original):
                     continue
                 public_name = f"{prefix}__{original}"
                 if public_name in used_names:
@@ -357,6 +419,11 @@ class AhmedToolboxGateway:
         remote = self.remotes.get(prefix)
         if remote is None or not remote_name:
             return self._text_result(f"unknown tool: {name}", is_error=True)
+        if not remote.is_tool_allowed(remote_name):
+            return self._text_result(
+                f"tool is not allowlisted: {name}",
+                is_error=True,
+            )
         try:
             return remote.call_tool(remote_name, arguments)
         except RemoteMCPError as exc:
