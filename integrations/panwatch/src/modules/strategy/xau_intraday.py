@@ -8,7 +8,7 @@ or alert layer can consume.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from statistics import fmean
 from typing import Iterable
 
@@ -90,9 +90,9 @@ class XAUIntradayEngine:
         macro_bias: int = 0,
         now: datetime | None = None,
     ) -> XAUIntradayAssessment:
-        now = now or datetime.now(UTC)
+        now = now or datetime.now(timezone.utc)
         if now.tzinfo is None:
-            now = now.replace(tzinfo=UTC)
+            now = now.replace(tzinfo=timezone.utc)
         macro_bias = max(-1, min(1, int(macro_bias)))
 
         states: dict[str, XAUFrameState] = {}
