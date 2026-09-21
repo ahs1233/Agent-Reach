@@ -8,7 +8,7 @@ execution quote for XAUUSD.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from enum import StrEnum
 
 
@@ -45,7 +45,7 @@ class XAUQuote:
         if self.ask < self.bid:
             raise ValueError("XAU quote ask cannot be below bid")
         if self.observed_at.tzinfo is None:
-            object.__setattr__(self, "observed_at", self.observed_at.replace(tzinfo=UTC))
+            object.__setattr__(self, "observed_at", self.observed_at.replace(tzinfo=timezone.utc))
 
     @property
     def mid(self) -> float:
@@ -75,7 +75,7 @@ class XAUBar:
 
     def __post_init__(self) -> None:
         if self.timestamp.tzinfo is None:
-            object.__setattr__(self, "timestamp", self.timestamp.replace(tzinfo=UTC))
+            object.__setattr__(self, "timestamp", self.timestamp.replace(tzinfo=timezone.utc))
         if min(self.open, self.high, self.low, self.close) <= 0:
             raise ValueError("XAU OHLC values must be positive")
         if self.high < max(self.open, self.close, self.low):
