@@ -7,7 +7,7 @@ XAUUSD and must not be used for broker entry/SL/TP prices.
 
 from __future__ import annotations
 
-from datetime import UTC
+from datetime import timezone
 
 from .xau_models import XAUBar, XAUTimeframe
 
@@ -42,9 +42,9 @@ class YahooGoldResearchProvider:
         for index, row in frame.iterrows():
             timestamp = index.to_pydatetime()
             if timestamp.tzinfo is None:
-                timestamp = timestamp.replace(tzinfo=UTC)
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
             else:
-                timestamp = timestamp.astimezone(UTC)
+                timestamp = timestamp.astimezone(timezone.utc)
             out.append(
                 XAUBar(
                     timestamp=timestamp,
