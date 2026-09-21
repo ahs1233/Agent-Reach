@@ -227,9 +227,14 @@ def test_agent_reach_web_search_uses_documented_mcporter_route(monkeypatch):
         "exa.web_search_exa",
         "query=gold treasury yields",
         "numResults=7",
+        "--output",
+        "text",
     ]
     assert seen["kwargs"]["timeout"] == 45
     assert seen["kwargs"]["check"] is False
+    assert seen["kwargs"]["env"]["MCPORTER_CONFIG"].endswith(
+        "config/mcporter.json"
+    )
 
 
 def test_unknown_tool_is_controlled_error():
@@ -239,3 +244,81 @@ def test_unknown_tool_is_controlled_error():
 
     assert result["isError"] is True
     assert "unknown tool" in result["content"][0]["text"]
+
+
+
+def test_agent_reach_web_search_falls_back_to_direct_exa_mcp(monkeypatch):
+    gateway = AhmedToolboxGateway(agent_reach=_FakeReach())
+
+    class _Failed:
+        returncode = 1
+        stdout = ""
+        stderr = "mcporter upstream failure"
+
+    monkeypatch.setattr(
+        "agent_reach.toolbox.gateway.shutil.which",
+        lambda name: "/usr/bin/mcporter",
+    )
+    monkeypatch.setattr(
+        "agent_reach.toolbox.gateway.subprocess.run",
+        lambda *args, **kwargs: _Failed(),
+    )
+
+    seen = {}
+
+    def fake_call(self, name, arguments):
+        seen["name"] = name
+        seen["arguments"] = arguments
+        return {
+            "content": [{"type": "text", "text": "direct exa result"}],
+            "isError": False,
+        }
+
+    monkeypatch.setattr(RemoteMCPClient, "call_tool", fake_call)
+
+    result = gateway.call_tool(
+        "reach_web_search",
+        {"query": "gold treasury yields", "num_results": 3},
+    )
+
+    assert result["isError"] is False
+    assert result["content"][0]["text"] == "direct exa result"
+    assert seen["name"] == "web_search_exa"
+    assert seen["arguments"] == {
+        "query": "gold treasury yields",
+        "numResults": 3,
+    }
+
+
+def test_agent_reach_web_search_reports_both_route_failures(monkeypatch):
+    gateway = AhmedToolboxGateway(agent_reach=_FakeReach())
+
+    class _Failed:
+        returncode = 2
+        stdout = ""
+        stderr = "config lookup failed"
+
+    monkeypatch.setattr(
+        "agent_reach.toolbox.gateway.shutil.which",
+        lambda name: "/usr/bin/mcporter",
+    )
+    monkeypatch.setattr(
+        "agent_reach.toolbox.gateway.subprocess.run",
+        lambda *args, **kwargs: _Failed(),
+    )
+
+    def broken_call(self, name, arguments):
+        raise RemoteMCPError("hosted exa unavailable")
+
+    monkeypatch.setattr(RemoteMCPClient, "call_tool", broken_call)
+
+    result = gateway.call_tool(
+        "reach_web_search",
+        {"query": "OpenAI official site", "num_results": 1},
+    )
+
+    assert result["isError"] is True
+    text = result["content"][0]["text"]
+    assert "both routes" in text
+    assert "config lookup failed" in text
+    assert "hosted exa unavailable" in text
