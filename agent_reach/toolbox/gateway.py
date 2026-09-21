@@ -377,7 +377,13 @@ class AhmedToolboxGateway:
         used_names = {tool["name"] for tool in tools}
 
         for prefix, remote in sorted(self.remotes.items()):
-            for tool in remote.list_tools():
+            try:
+                remote_tools = remote.list_tools()
+            except RemoteMCPError:
+                # One unavailable research backend must not remove Agent Reach
+                # or other healthy MCP servers from the gateway's tool surface.
+                continue
+            for tool in remote_tools:
                 original = str(tool.get("name") or "").strip()
                 if not original or not remote.is_tool_allowed(original):
                     continue
