@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from enum import StrEnum
+from enum import Enum
 
 
-class XAUTimeframe(StrEnum):
+class XAUTimeframe(str, Enum):
     M1 = "1m"
     M5 = "5m"
     M15 = "15m"
