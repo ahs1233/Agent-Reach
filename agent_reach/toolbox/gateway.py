@@ -444,38 +444,80 @@ class AhmedToolboxGateway:
             except (TypeError, ValueError):
                 return self._text_result("num_results must be an integer", is_error=True)
             num_results = max(1, min(num_results, 10))
+
+            # Primary route: the Agent Reach documented mcporter -> Exa path.
+            # Pin the config explicitly so Railway process cwd/config discovery
+            # cannot make a healthy deployment behave differently.
             mcporter = shutil.which("mcporter")
-            if not mcporter:
-                return self._text_result(
-                    "mcporter is not installed; Agent Reach Exa search is unavailable",
-                    is_error=True,
+            mcporter_error = ""
+            if mcporter:
+                env = dict(os.environ)
+                env.setdefault(
+                    "MCPORTER_CONFIG",
+                    os.path.join(os.getcwd(), "config", "mcporter.json"),
                 )
+                try:
+                    completed = subprocess.run(
+                        [
+                            mcporter,
+                            "call",
+                            "exa.web_search_exa",
+                            f"query={query}",
+                            f"numResults={num_results}",
+                            "--output",
+                            "text",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=45,
+                        check=False,
+                        env=env,
+                    )
+                    output = (completed.stdout or "").strip()
+                    if completed.returncode == 0 and output:
+                        return self._text_result(output[:100000])
+                    mcporter_error = (
+                        completed.stderr or output or "mcporter search failed"
+                    ).strip()[:4000]
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    mcporter_error = f"{type(exc).__name__}: {exc}"
+            else:
+                mcporter_error = "mcporter executable not found"
+
+            # Fail-soft fallback: call Exa's hosted MCP directly through the
+            # same minimal read-only MCP client used for other remote servers.
+            # This keeps public web search available when the CLI/config layer
+            # fails, without widening the exposed tool surface.
+            exa = RemoteMCPClient(
+                RemoteMCPConfig(
+                    name="exa",
+                    url="https://mcp.exa.ai/mcp",
+                    allow_tools=("web_search_exa",),
+                    timeout_seconds=30.0,
+                )
+            )
             try:
-                completed = subprocess.run(
-                    [
-                        mcporter,
-                        "call",
-                        "exa.web_search_exa",
-                        f"query={query}",
-                        f"numResults={num_results}",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=45,
-                    check=False,
+                result = exa.call_tool(
+                    "web_search_exa",
+                    {"query": query, "numResults": num_results},
                 )
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                return self._text_result(
-                    f"Agent Reach web search failed: {exc}",
-                    is_error=True,
-                )
-            output = (completed.stdout or "").strip()
-            if completed.returncode != 0:
-                error = (completed.stderr or output or "mcporter search failed").strip()
-                return self._text_result(error[:20000], is_error=True)
-            if not output:
-                return self._text_result("Agent Reach web search returned no output", is_error=True)
-            return self._text_result(output[:100000])
+                if isinstance(result, dict) and not bool(result.get("isError")):
+                    return result
+                remote_text = "\n".join(
+                    str(item.get("text") or "")
+                    for item in (result.get("content") or [])
+                    if isinstance(item, dict)
+                ).strip()
+                fallback_error = remote_text or "direct Exa MCP returned an error"
+            except Exception as exc:  # noqa: BLE001 - controlled research fallback
+                fallback_error = f"{type(exc).__name__}: {exc}"
+
+            diagnostic = (
+                "Agent Reach web search unavailable after both routes; "
+                f"mcporter={mcporter_error[:1200]!r}; "
+                f"direct_exa={fallback_error[:1200]!r}"
+            )
+            return self._text_result(diagnostic, is_error=True)
 
         if name == "reach_read_url":
             url = str(arguments.get("url") or "").strip()
