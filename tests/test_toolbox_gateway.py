@@ -133,6 +133,7 @@ def test_remote_tools_are_namespaced_and_filtered():
 
     assert "reach_doctor" in names
     assert "reach_read_url" in names
+    assert "reach_web_search" in names
     assert "scrapling__fetch" in names
     assert "scrapling__make_request" not in names
 
@@ -145,7 +146,7 @@ def test_unavailable_remote_does_not_remove_local_tools():
 
     names = {tool["name"] for tool in gateway.list_tools()}
 
-    assert names == {"reach_doctor", "reach_read_url"}
+    assert names == {"reach_doctor", "reach_web_search", "reach_read_url"}
 
 
 def test_namespaced_tool_calls_are_forwarded():
@@ -194,6 +195,41 @@ def test_remote_client_negotiates_session_and_protocol_headers():
     assert [tool["name"] for tool in tools] == ["fetch"]
     methods = [call["json"].get("method") for call in session.calls]
     assert methods == ["initialize", "notifications/initialized", "tools/list"]
+
+
+def test_agent_reach_web_search_uses_documented_mcporter_route(monkeypatch):
+    gateway = AhmedToolboxGateway(agent_reach=_FakeReach())
+    seen = {}
+
+    class _Completed:
+        returncode = 0
+        stdout = "search results"
+        stderr = ""
+
+    def _run(argv, **kwargs):
+        seen["argv"] = argv
+        seen["kwargs"] = kwargs
+        return _Completed()
+
+    monkeypatch.setattr("agent_reach.toolbox.gateway.shutil.which", lambda name: "/usr/bin/mcporter")
+    monkeypatch.setattr("agent_reach.toolbox.gateway.subprocess.run", _run)
+
+    result = gateway.call_tool(
+        "reach_web_search",
+        {"query": "gold treasury yields", "num_results": 7},
+    )
+
+    assert result["isError"] is False
+    assert result["content"][0]["text"] == "search results"
+    assert seen["argv"] == [
+        "/usr/bin/mcporter",
+        "call",
+        "exa.web_search_exa",
+        "query=gold treasury yields",
+        "numResults=7",
+    ]
+    assert seen["kwargs"]["timeout"] == 45
+    assert seen["kwargs"]["check"] is False
 
 
 def test_unknown_tool_is_controlled_error():
