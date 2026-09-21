@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from pan_agent import (
@@ -144,7 +144,7 @@ def register_ahmed_toolbox_tools(
                     "result": result,
                 },
                 sources=[{"name": f"Ahmed ToolBox / {_remote_name}"}],
-                observed_at=datetime.now(UTC),
+                observed_at=datetime.now(timezone.utc),
             )
 
         title = _tool_title(remote_name)
