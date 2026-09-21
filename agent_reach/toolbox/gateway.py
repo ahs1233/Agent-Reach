@@ -73,6 +73,7 @@ class RemoteMCPClient:
         self.config = config
         self._session = session or requests.Session()
         self._session_id: str | None = None
+        self._negotiated_protocol: str | None = None
         self._initialized = False
         self._lock = threading.RLock()
         self._next_id = 1
@@ -95,6 +96,8 @@ class RemoteMCPClient:
             headers["Authorization"] = f"Bearer {self.config.token}"
         if self._session_id:
             headers["Mcp-Session-Id"] = self._session_id
+        if self._negotiated_protocol:
+            headers["MCP-Protocol-Version"] = self._negotiated_protocol
         return headers
 
     @staticmethod
@@ -217,7 +220,7 @@ class RemoteMCPClient:
                 return
             initialized = False
             try:
-                self.rpc(
+                init_response = self.rpc(
                     "initialize",
                     {
                         "protocolVersion": self.config.protocol_version,
@@ -227,6 +230,14 @@ class RemoteMCPClient:
                             "version": "0.1.0",
                         },
                     },
+                )
+                negotiated = (
+                    (init_response.get("result") or {}).get("protocolVersion")
+                    if isinstance(init_response, dict)
+                    else None
+                )
+                self._negotiated_protocol = str(
+                    negotiated or self.config.protocol_version
                 )
                 initialized = True
             except RemoteMCPError:
