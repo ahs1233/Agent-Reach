@@ -53,6 +53,12 @@ class ToolboxRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
+        if self.path.rstrip("/") == "/health":
+            self._send_json(200, {"status": "ok", "service": "ahmed-toolbox"})
+            return
+        self._send_json(404, {"status": "not_found"})
+
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
         if self.path.rstrip("/") not in {"", "/mcp"}:
             self._send_json(404, _rpc_error(None, -32601, "not found"))
@@ -126,7 +132,10 @@ class ToolboxRequestHandler(BaseHTTPRequestHandler):
 
 def main() -> None:
     host = os.environ.get("AHMED_TOOLBOX_HOST", "127.0.0.1")
-    port = int(os.environ.get("AHMED_TOOLBOX_PORT", "8765"))
+    port = int(
+        os.environ.get("PORT")
+        or os.environ.get("AHMED_TOOLBOX_PORT", "8765")
+    )
     token = os.environ.get("AHMED_TOOLBOX_TOKEN", "")
 
     gateway = AhmedToolboxGateway.from_environment()
