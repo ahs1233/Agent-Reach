@@ -41,6 +41,7 @@ class XAUIntradayAssessment:
     candidate: str
     blocked: bool
     block_reasons: tuple[str, ...]
+    warnings: tuple[str, ...]
     frame_states: dict[str, XAUFrameState]
     macro_bias: int
     event_risk: bool
@@ -68,6 +69,7 @@ class XAUIntradayEngine:
         atr_period: int = 14,
         breakout_lookback: int = 20,
         max_spread_bps: float | None = None,
+        require_execution_data: bool = False,
     ) -> None:
         if fast_ema < 2 or slow_ema <= fast_ema:
             raise ValueError("EMA periods must satisfy 2 <= fast < slow")
@@ -77,6 +79,7 @@ class XAUIntradayEngine:
         self.atr_period = atr_period
         self.breakout_lookback = breakout_lookback
         self.max_spread_bps = max_spread_bps
+        self.require_execution_data = require_execution_data
 
     def analyze(
         self,
@@ -94,6 +97,7 @@ class XAUIntradayEngine:
 
         states: dict[str, XAUFrameState] = {}
         reasons: list[str] = []
+        warnings: list[str] = []
 
         for timeframe in (XAUTimeframe.M1, XAUTimeframe.M5, XAUTimeframe.M15):
             bars = sorted(
@@ -113,8 +117,12 @@ class XAUIntradayEngine:
             if now - latest.timestamp > self._MAX_AGE[timeframe]:
                 reasons.append(f"stale_{timeframe.value}_bars")
                 continue
+            if self.require_execution_data and not latest.execution_eligible:
+                reasons.append(f"execution_{timeframe.value}_bars_required")
             states[timeframe.value] = self._frame_state(bars, timeframe)
 
+        if self.require_execution_data and quote is None:
+            reasons.append("execution_quote_missing")
         if quote is not None:
             if not quote.execution_eligible:
                 reasons.append("quote_not_execution_eligible")
@@ -136,6 +144,7 @@ class XAUIntradayEngine:
                 candidate="none",
                 blocked=True,
                 block_reasons=tuple(dict.fromkeys(reasons)),
+                warnings=tuple(dict.fromkeys(warnings)),
                 frame_states=states,
                 macro_bias=macro_bias,
                 event_risk=event_risk,
@@ -164,9 +173,9 @@ class XAUIntradayEngine:
             candidate = "short_setup"
 
         if candidate == "long_setup" and macro_bias < 0:
-            reasons.append("macro_bias_conflicts_long")
+            warnings.append("macro_bias_conflicts_long")
         elif candidate == "short_setup" and macro_bias > 0:
-            reasons.append("macro_bias_conflicts_short")
+            warnings.append("macro_bias_conflicts_short")
 
         blocked = any(
             reason
@@ -175,9 +184,11 @@ class XAUIntradayEngine:
                 "stale_quote",
                 "quote_not_execution_eligible",
                 "spread_too_wide",
+                "execution_quote_missing",
             }
             or reason.startswith("stale_")
             or reason.startswith("insufficient_")
+            or reason.startswith("execution_")
             for reason in reasons
         )
 
@@ -186,6 +197,7 @@ class XAUIntradayEngine:
             candidate="none" if blocked else candidate,
             blocked=blocked,
             block_reasons=tuple(dict.fromkeys(reasons)),
+            warnings=tuple(dict.fromkeys(warnings)),
             frame_states=states,
             macro_bias=macro_bias,
             event_risk=event_risk,
