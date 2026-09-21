@@ -51,6 +51,12 @@ It returns `long_setup`, `short_setup`, or `none` as a candidate state.
 It does not place a trade and does not invent a fixed stop-loss/target. The
 returned ATR and swing references are the inputs for a later risk policy.
 
+For any execution-oriented caller, instantiate it with
+`require_execution_data=True`. That mode blocks research-proxy bars
+(`execution_eligible=False`) and requires a fresh execution-eligible spot
+quote. Macro disagreement is reported separately as a warning rather than
+being mislabeled as a hard data/risk gate.
+
 ## TradingAgents slow brain
 
 For XAU runs, use:
@@ -70,8 +76,13 @@ final_state, decision = propagate_xau(
 ```
 
 This removes the company Fundamentals Analyst and passes
-`asset_type="commodity"`. Market, sentiment, news, bull/bear research, trader,
-risk debate, and portfolio manager remain available.
+`asset_type="commodity"`. TradingAgents v0.5.0's public CLI documents stock
+and crypto modes, but its programmatic `propagate(..., asset_type=...)` path
+accepts the value and downstream researcher prompts treat non-stock assets
+generically. Treat `commodity` as a PanWatch compatibility extension until
+the integration test suite has exercised a full XAU run. Market, sentiment,
+news, bull/bear research, trader, risk debate, and portfolio manager remain
+available.
 
 ## Atria
 
