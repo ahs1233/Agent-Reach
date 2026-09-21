@@ -232,9 +232,8 @@ def test_agent_reach_web_search_uses_documented_mcporter_route(monkeypatch):
     ]
     assert seen["kwargs"]["timeout"] == 45
     assert seen["kwargs"]["check"] is False
-    assert seen["kwargs"]["env"]["MCPORTER_CONFIG"].endswith(
-        "config/mcporter.json"
-    )
+    config_path = seen["kwargs"]["env"]["MCPORTER_CONFIG"].replace("\\", "/")
+    assert config_path.endswith("config/mcporter.json")
 
 
 def test_unknown_tool_is_controlled_error():
