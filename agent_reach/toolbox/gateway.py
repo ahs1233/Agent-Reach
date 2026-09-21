@@ -1,0 +1,370 @@
+"""MCP gateway that composes Agent Reach with remote MCP servers.
+
+The gateway deliberately keeps credentials and transport configuration in the
+host environment. Remote tools are namespaced (for example
+``scrapling__fetch``) so that two MCP servers may expose the same tool name
+without collisions.
+
+This module does not make Agent Reach pretend to be the underlying source.
+Agent Reach remains a discovery/access capability layer; remote MCP servers
+remain the owners of their returned data.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import threading
+from dataclasses import dataclass
+from typing import Any
+
+import requests
+
+from agent_reach import AgentReach
+from agent_reach.channels.web import WebChannel
+
+_MAX_REMOTE_RESPONSE_BYTES = 5 * 1024 * 1024
+_DEFAULT_TIMEOUT_SECONDS = 30.0
+_PREFIX_RE = re.compile(r"[^a-zA-Z0-9_-]+")
+_LOCAL_TOOLS = {
+    "reach_doctor",
+    "reach_read_url",
+}
+
+
+class RemoteMCPError(RuntimeError):
+    """Raised when a configured remote MCP server cannot satisfy a request."""
+
+
+@dataclass(frozen=True)
+class RemoteMCPConfig:
+    name: str
+    url: str
+    token: str = ""
+    timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS
+    protocol_version: str = "2024-11-05"
+
+    @property
+    def prefix(self) -> str:
+        value = _PREFIX_RE.sub("_", self.name.strip()).strip("_").lower()
+        if not value:
+            raise ValueError("remote MCP name must contain at least one safe character")
+        return value
+
+
+class RemoteMCPClient:
+    """Minimal HTTP MCP client with lazy initialize/session handling."""
+
+    def __init__(self, config: RemoteMCPConfig, session: requests.Session | None = None):
+        self.config = config
+        self._session = session or requests.Session()
+        self._session_id: str | None = None
+        self._initialized = False
+        self._lock = threading.Lock()
+        self._next_id = 1
+
+    def _request_id(self) -> int:
+        with self._lock:
+            value = self._next_id
+            self._next_id += 1
+            return value
+
+    def _headers(self) -> dict[str, str]:
+        headers = {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+        }
+        if self.config.token:
+            headers["Authorization"] = f"Bearer {self.config.token}"
+        if self._session_id:
+            headers["Mcp-Session-Id"] = self._session_id
+        return headers
+
+    @staticmethod
+    def _decode_payload(content_type: str, body: bytes, request_id: int) -> dict[str, Any]:
+        text = body.decode("utf-8", errors="replace")
+        if "text/event-stream" not in content_type.lower():
+            payload = json.loads(text)
+            if not isinstance(payload, dict):
+                raise RemoteMCPError("remote MCP returned a non-object JSON payload")
+            return payload
+
+        # Streamable HTTP may return one or more SSE events. Pick the JSON-RPC
+        # response matching our request id, falling back to the first JSON object.
+        fallback: dict[str, Any] | None = None
+        for line in text.splitlines():
+            if not line.startswith("data:"):
+                continue
+            raw = line[5:].strip()
+            if not raw:
+                continue
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if fallback is None:
+                fallback = payload
+            if payload.get("id") == request_id:
+                return payload
+        if fallback is not None:
+            return fallback
+        raise RemoteMCPError("remote MCP returned SSE without a JSON-RPC payload")
+
+    def rpc(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        request_id = self._request_id()
+        payload = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": method,
+            "params": params or {},
+        }
+        try:
+            response = self._session.post(
+                self.config.url,
+                headers=self._headers(),
+                json=payload,
+                timeout=self.config.timeout_seconds,
+                stream=True,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise RemoteMCPError(
+                f"{self.config.name} MCP request failed: {exc}"
+            ) from exc
+
+        session_id = response.headers.get("Mcp-Session-Id") or response.headers.get(
+            "mcp-session-id"
+        )
+        if session_id:
+            self._session_id = session_id
+
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in response.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > _MAX_REMOTE_RESPONSE_BYTES:
+                raise RemoteMCPError(
+                    f"{self.config.name} MCP response exceeded "
+                    f"{_MAX_REMOTE_RESPONSE_BYTES} bytes"
+                )
+            chunks.append(chunk)
+
+        try:
+            decoded = self._decode_payload(
+                response.headers.get("Content-Type", ""),
+                b"".join(chunks),
+                request_id,
+            )
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise RemoteMCPError(
+                f"{self.config.name} MCP returned invalid JSON"
+            ) from exc
+
+        if "error" in decoded:
+            err = decoded.get("error")
+            raise RemoteMCPError(f"{self.config.name} MCP error: {err}")
+        return decoded
+
+    def ensure_initialized(self) -> None:
+        if self._initialized:
+            return
+        with self._lock:
+            if self._initialized:
+                return
+            try:
+                self.rpc(
+                    "initialize",
+                    {
+                        "protocolVersion": self.config.protocol_version,
+                        "capabilities": {},
+                        "clientInfo": {
+                            "name": "ahmed-toolbox",
+                            "version": "0.1.0",
+                        },
+                    },
+                )
+            except RemoteMCPError:
+                # Some small MCP servers allow tools/list directly and do not
+                # implement initialize. We deliberately fail open here; the
+                # actual tools/list call remains authoritative.
+                pass
+            self._initialized = True
+
+    def list_tools(self) -> list[dict[str, Any]]:
+        self.ensure_initialized()
+        payload = self.rpc("tools/list")
+        result = payload.get("result") or {}
+        tools = result.get("tools") or []
+        if not isinstance(tools, list):
+            raise RemoteMCPError(f"{self.config.name} MCP tools/list is malformed")
+        return [tool for tool in tools if isinstance(tool, dict)]
+
+    def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        self.ensure_initialized()
+        payload = self.rpc(
+            "tools/call",
+            {"name": name, "arguments": arguments},
+        )
+        result = payload.get("result") or {}
+        if not isinstance(result, dict):
+            raise RemoteMCPError(f"{self.config.name} MCP tools/call is malformed")
+        return result
+
+
+class AhmedToolboxGateway:
+    """Compose local Agent Reach tools and configured remote MCP tools."""
+
+    def __init__(
+        self,
+        remotes: dict[str, RemoteMCPClient] | None = None,
+        *,
+        agent_reach: AgentReach | None = None,
+    ):
+        self.agent_reach = agent_reach or AgentReach()
+        self.remotes = remotes or {}
+
+    @classmethod
+    def from_environment(cls) -> "AhmedToolboxGateway":
+        raw = os.environ.get("AHMED_TOOLBOX_REMOTE_MCPS", "").strip()
+        if not raw:
+            return cls()
+        try:
+            config = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError("AHMED_TOOLBOX_REMOTE_MCPS must be valid JSON") from exc
+        if not isinstance(config, dict):
+            raise ValueError("AHMED_TOOLBOX_REMOTE_MCPS must be a JSON object")
+
+        remotes: dict[str, RemoteMCPClient] = {}
+        for name, item in config.items():
+            if not isinstance(item, dict) or not item.get("url"):
+                raise ValueError(f"remote MCP {name!r} requires a url")
+            token = str(item.get("token") or "")
+            token_env = str(item.get("token_env") or "")
+            if token_env:
+                token = os.environ.get(token_env, token)
+            remote_config = RemoteMCPConfig(
+                name=str(name),
+                url=str(item["url"]),
+                token=token,
+                timeout_seconds=float(item.get("timeout_seconds") or _DEFAULT_TIMEOUT_SECONDS),
+                protocol_version=str(item.get("protocol_version") or "2024-11-05"),
+            )
+            prefix = remote_config.prefix
+            if prefix in remotes:
+                raise ValueError(f"duplicate remote MCP prefix: {prefix}")
+            remotes[prefix] = RemoteMCPClient(remote_config)
+        return cls(remotes)
+
+    @staticmethod
+    def _local_tool_specs() -> list[dict[str, Any]]:
+        return [
+            {
+                "name": "reach_doctor",
+                "description": (
+                    "Inspect Agent Reach channel health and configured backends. "
+                    "Use this before relying on optional social/search channels."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "reach_read_url",
+                "description": (
+                    "Read a public HTTP(S) page through Agent Reach's Jina Reader "
+                    "path and return cleaned Markdown. This is a read-only tool."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["url"],
+                    "properties": {
+                        "url": {"type": "string"},
+                        "max_chars": {
+                            "type": "integer",
+                            "minimum": 1000,
+                            "maximum": 100000,
+                            "default": 20000,
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+            },
+        ]
+
+    def list_tools(self) -> list[dict[str, Any]]:
+        tools = list(self._local_tool_specs())
+        used_names = {tool["name"] for tool in tools}
+
+        for prefix, remote in sorted(self.remotes.items()):
+            for tool in remote.list_tools():
+                original = str(tool.get("name") or "").strip()
+                if not original:
+                    continue
+                public_name = f"{prefix}__{original}"
+                if public_name in used_names:
+                    raise RemoteMCPError(f"duplicate gateway tool name: {public_name}")
+                used_names.add(public_name)
+                description = str(tool.get("description") or "").strip()
+                tools.append(
+                    {
+                        "name": public_name,
+                        "description": (
+                            f"[{prefix} MCP] {description}" if description else f"[{prefix} MCP]"
+                        ),
+                        "inputSchema": tool.get("inputSchema")
+                        or {"type": "object", "properties": {}},
+                    }
+                )
+        return tools
+
+    def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        arguments = arguments or {}
+        if name == "reach_doctor":
+            data = self.agent_reach.doctor()
+            return self._text_result(json.dumps(data, ensure_ascii=False, default=str))
+
+        if name == "reach_read_url":
+            url = str(arguments.get("url") or "").strip()
+            if not url:
+                return self._text_result("url is required", is_error=True)
+            try:
+                max_chars = int(arguments.get("max_chars") or 20000)
+            except (TypeError, ValueError):
+                return self._text_result("max_chars must be an integer", is_error=True)
+            max_chars = max(1000, min(max_chars, 100000))
+            try:
+                text = WebChannel().read(url)
+            except Exception as exc:  # noqa: BLE001 - map upstream failure into MCP result
+                return self._text_result(f"Agent Reach read failed: {exc}", is_error=True)
+            truncated = len(text) > max_chars
+            text = text[:max_chars]
+            if truncated:
+                text += "\n\n[TRUNCATED BY AHMED TOOLBOX]"
+            return self._text_result(text)
+
+        if "__" not in name:
+            return self._text_result(f"unknown tool: {name}", is_error=True)
+
+        prefix, remote_name = name.split("__", 1)
+        remote = self.remotes.get(prefix)
+        if remote is None or not remote_name:
+            return self._text_result(f"unknown tool: {name}", is_error=True)
+        try:
+            return remote.call_tool(remote_name, arguments)
+        except RemoteMCPError as exc:
+            return self._text_result(str(exc), is_error=True)
+
+    @staticmethod
+    def _text_result(text: str, *, is_error: bool = False) -> dict[str, Any]:
+        return {
+            "content": [{"type": "text", "text": text}],
+            "isError": is_error,
+        }
