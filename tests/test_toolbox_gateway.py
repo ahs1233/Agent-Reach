@@ -9,6 +9,12 @@ class _FakeReach:
 
 
 class _FakeRemote:
+    def __init__(self, allowed=("fetch",)):
+        self.allowed = set(allowed)
+
+    def is_tool_allowed(self, name):
+        return name in self.allowed
+
     def list_tools(self):
         return [
             {
@@ -18,18 +24,26 @@ class _FakeRemote:
                     "type": "object",
                     "properties": {"url": {"type": "string"}},
                 },
-            }
+            },
+            {
+                "name": "make_request",
+                "description": "Any-method request",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"url": {"type": "string"}},
+                },
+            },
         ]
 
     def call_tool(self, name, arguments):
-        assert name == "fetch"
+        assert self.is_tool_allowed(name)
         return {
             "content": [{"type": "text", "text": f"fetched {arguments['url']}"}],
             "isError": False,
         }
 
 
-def test_remote_tools_are_namespaced():
+def test_remote_tools_are_namespaced_and_filtered():
     gateway = AhmedToolboxGateway(
         {"scrapling": _FakeRemote()},
         agent_reach=_FakeReach(),
@@ -40,6 +54,7 @@ def test_remote_tools_are_namespaced():
     assert "reach_doctor" in names
     assert "reach_read_url" in names
     assert "scrapling__fetch" in names
+    assert "scrapling__make_request" not in names
 
 
 def test_namespaced_tool_calls_are_forwarded():
@@ -55,6 +70,21 @@ def test_namespaced_tool_calls_are_forwarded():
 
     assert result["isError"] is False
     assert result["content"][0]["text"] == "fetched https://example.com"
+
+
+def test_non_allowlisted_remote_tool_is_blocked():
+    gateway = AhmedToolboxGateway(
+        {"scrapling": _FakeRemote()},
+        agent_reach=_FakeReach(),
+    )
+
+    result = gateway.call_tool(
+        "scrapling__make_request",
+        {"url": "https://example.com"},
+    )
+
+    assert result["isError"] is True
+    assert "not allowlisted" in result["content"][0]["text"]
 
 
 def test_unknown_tool_is_controlled_error():
