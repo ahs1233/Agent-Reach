@@ -49,6 +49,12 @@ def _descriptor_metadata(remote_name: str) -> tuple[str, list[str], list[str]]:
             ["tool health", "source availability", "doctor"],
             ["tool_health", "source_health"],
         )
+    if remote_name == "reach_web_search":
+        return (
+            "web_research",
+            ["search web", "discover sources", "latest news", "research topic"],
+            ["web_search", "source_discovery", "research"],
+        )
     if remote_name == "reach_read_url":
         return (
             "web_research",
