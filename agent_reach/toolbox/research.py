@@ -1090,12 +1090,22 @@ class ResearchStore:
                             {
                                 "relation": relation,
                                 "evidence_id": evidence["evidence_id"],
+                                "supporting_passage": evidence["supporting_passage"],
+                                "structured_fact": evidence["structured_fact"],
+                                "metric": evidence["metric"],
+                                "value": evidence["value"],
+                                "unit": evidence["unit"],
+                                "geography": evidence["geography"],
+                                "reference_period": evidence["reference_period"],
                                 "observation_type": evidence["observation_type"],
+                                "forecast_horizon": evidence["forecast_horizon"],
                                 "source_id": source["source_id"],
                                 "source_url": source["canonical_url"],
                                 "publisher": source["publisher"],
                                 "publication_date": source["publication_date"],
                                 "data_cutoff": source["data_cutoff"],
+                                "representation_hash": source["representation_hash"],
+                                "content_hash_scope": source["content_hash_scope"],
                                 "retrieved_at": (
                                     source["run_retrieval"]["occurred_at"]
                                     if source.get("run_retrieval")
