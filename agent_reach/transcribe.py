@@ -121,6 +121,47 @@ def transcribe_local(path: Path, *, language: Optional[str] = None) -> dict:
     }
 
 
+def build_transcript_evidence(transcript: dict, *, source_url: str = "") -> dict:
+    """Normalize local STT into compact, auditable evidence for the intelligence layer."""
+    segments = transcript.get("segments") or []
+    evidence = []
+    uncertain = []
+    for idx, seg in enumerate(segments):
+        words = seg.get("words") or []
+        probs = [float(w.get("probability", 0.0)) for w in words if w.get("probability") is not None]
+        confidence = round(sum(probs) / len(probs), 4) if probs else None
+        low = [w for w in words if float(w.get("probability", 1.0)) < 0.55]
+        start = float(seg.get("start_seconds", 0.0))
+        end = float(seg.get("end_seconds", start))
+        item = {
+            "id": f"speech:{idx:04d}",
+            "start_seconds": start,
+            "end_seconds": end,
+            "citation": f"media:{start:.1f}-{end:.1f}",
+            "text": str(seg.get("text") or "").strip(),
+            "confidence": confidence,
+            "needs_review": bool(low),
+            "low_confidence_words": low,
+        }
+        evidence.append(item)
+        if low:
+            uncertain.append({"evidence_id": item["id"], "citation": item["citation"], "words": low})
+    return {
+        "schema": "ahmed.transcript_evidence.v2",
+        "source_url": source_url,
+        "language": transcript.get("language"),
+        "language_probability": transcript.get("language_probability"),
+        "text": transcript.get("text", ""),
+        "evidence": evidence,
+        "review_queue": uncertain,
+        "stats": {
+            "segment_count": len(evidence),
+            "review_segment_count": len(uncertain),
+            "word_count": sum(len(seg.get("words") or []) for seg in segments),
+        },
+    }
+
+
 def _probe_audio_duration(path: Path) -> float:
     """Return duration in seconds or fail closed before media generation."""
     _require("ffprobe")
