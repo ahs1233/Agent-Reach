@@ -28,7 +28,7 @@ from agent_reach.channels.web import WebChannel
 
 from .research import ResearchStore
 from .research_mcp import handle_research_tool, research_tool_specs
-from .video import (ingest_media, register_media_evidence, verification_queries, deep_understand_media, translate_media_manifest, extract_media_text, reason_across_time, build_media_knowledge_graph)
+from .video import (ingest_media, register_media_evidence, verification_queries, deep_understand_media, translate_media_manifest, extract_media_text, reason_across_time, build_media_knowledge_graph, evaluate_video_intelligence)
 
 _MAX_REMOTE_RESPONSE_BYTES = 5 * 1024 * 1024
 _DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -605,6 +605,7 @@ class AhmedToolboxGateway:
                 longitudinal = reason_across_time(manifest, result["understanding"], model=model)
                 result["longitudinal_reasoning"] = longitudinal
                 result["knowledge_graph"] = build_media_knowledge_graph(longitudinal)
+                result["evaluation"] = evaluate_video_intelligence(manifest, understanding=result["understanding"], longitudinal=longitudinal)
                 target = str(arguments.get("target_language") or "").strip()
                 if target:
                     result["translation"] = translate_media_manifest(manifest, target, model=model)
