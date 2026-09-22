@@ -1,7 +1,8 @@
-"""Core evidence and output-integrity store for Ahmed Research Engine.
+"""Core evidence, freshness, and output-integrity store for Ahmed Research Engine.
 
-The core remains domain-agnostic and output-agnostic. It does not compute
-freshness, source-quality, conflict, causal, or PanWatch state scores here.
+The core remains domain-agnostic and output-agnostic. Freshness is categorical
+and policy-driven; source-quality, independence, conflict, causal, and PanWatch
+state scoring remain outside this layer.
 """
 
 from __future__ import annotations
@@ -15,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
+
+from .freshness import evaluate_freshness
 
 OBSERVATION_TYPES = {
     "ACTUAL",
@@ -301,6 +304,32 @@ class ResearchStore:
             FOREIGN KEY(fragment_id) REFERENCES output_fragments(fragment_id) ON DELETE CASCADE,
             FOREIGN KEY(claim_id) REFERENCES claims(claim_id)
         );
+
+        CREATE TABLE IF NOT EXISTS freshness_evaluations (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            freshness_id TEXT UNIQUE,
+            run_id TEXT NOT NULL,
+            evidence_id TEXT NOT NULL,
+            policy_name TEXT NOT NULL,
+            policy_mode TEXT NOT NULL,
+            status TEXT NOT NULL,
+            reason_code TEXT NOT NULL,
+            as_of TEXT NOT NULL,
+            basis_field TEXT NOT NULL,
+            basis_value TEXT,
+            basis_precision TEXT,
+            age_min_seconds REAL,
+            age_max_seconds REAL,
+            max_age_seconds REAL,
+            latest_known_cutoff TEXT,
+            details_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES research_runs(run_id) ON DELETE CASCADE,
+            FOREIGN KEY(evidence_id) REFERENCES evidence_items(evidence_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_freshness_evidence
+        ON freshness_evaluations(evidence_id, seq);
         """
         with self._lock, self._conn:
             self._conn.executescript(schema)
@@ -1252,6 +1281,123 @@ class ResearchStore:
             },
         }
 
+    def evaluate_evidence_freshness(
+        self,
+        evidence_id: str,
+        *,
+        policy_name: str,
+        as_of: str | None = None,
+        max_age_seconds: int | float | None = None,
+        latest_known_cutoff: str | None = None,
+    ) -> dict[str, Any]:
+        """Evaluate and persist freshness using the source's underlying data cutoff."""
+        evidence = self.get_evidence(evidence_id)
+        source = self.get_source(
+            evidence["source_id"],
+            run_id=evidence["run_id"],
+        )
+        result = evaluate_freshness(
+            data_cutoff=source["data_cutoff"],
+            publication_date=source["publication_date"],
+            retrieved_at=(
+                source["run_retrieval"]["occurred_at"]
+                if source.get("run_retrieval")
+                else source["latest_retrieved_at"]
+            ),
+            policy_name=policy_name,
+            as_of=as_of,
+            max_age_seconds=max_age_seconds,
+            latest_known_cutoff=latest_known_cutoff,
+        )
+
+        now = utc_now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO freshness_evaluations(
+                    freshness_id, run_id, evidence_id, policy_name, policy_mode,
+                    status, reason_code, as_of, basis_field, basis_value,
+                    basis_precision, age_min_seconds, age_max_seconds,
+                    max_age_seconds, latest_known_cutoff, details_json, created_at
+                )
+                VALUES(NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    evidence["run_id"],
+                    evidence_id,
+                    result["policy_name"],
+                    result["policy_mode"],
+                    result["status"],
+                    result["reason_code"],
+                    result["as_of"],
+                    result["basis_field"],
+                    result["basis_value"],
+                    result["basis_precision"],
+                    result["age_min_seconds"],
+                    result["age_max_seconds"],
+                    result["max_age_seconds"],
+                    result["latest_known_cutoff"],
+                    _json_dumps(
+                        {
+                            "publication_date": result["publication_date"],
+                            "retrieved_at": result["retrieved_at"],
+                        }
+                    ),
+                    now,
+                ),
+            )
+            freshness_id = self._public_id("FR", int(cursor.lastrowid))
+            self._conn.execute(
+                "UPDATE freshness_evaluations SET freshness_id = ? WHERE seq = ?",
+                (freshness_id, cursor.lastrowid),
+            )
+
+        return self.get_freshness_evaluation(freshness_id)
+
+    def get_freshness_evaluation(self, freshness_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM freshness_evaluations WHERE freshness_id = ?",
+                (freshness_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"unknown freshness evaluation: {freshness_id}")
+        details = _json_loads(row["details_json"], {})
+        return {
+            "freshness_id": row["freshness_id"],
+            "run_id": row["run_id"],
+            "evidence_id": row["evidence_id"],
+            "policy_name": row["policy_name"],
+            "policy_mode": row["policy_mode"],
+            "status": row["status"],
+            "reason_code": row["reason_code"],
+            "as_of": row["as_of"],
+            "basis_field": row["basis_field"],
+            "basis_value": row["basis_value"],
+            "basis_precision": row["basis_precision"],
+            "age_min_seconds": row["age_min_seconds"],
+            "age_max_seconds": row["age_max_seconds"],
+            "max_age_seconds": row["max_age_seconds"],
+            "latest_known_cutoff": row["latest_known_cutoff"],
+            "publication_date": details.get("publication_date"),
+            "retrieved_at": details.get("retrieved_at"),
+            "created_at": row["created_at"],
+        }
+
+    def get_latest_evidence_freshness(self, evidence_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT freshness_id FROM freshness_evaluations
+                WHERE evidence_id = ?
+                ORDER BY seq DESC LIMIT 1
+                """,
+                (evidence_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self.get_freshness_evaluation(str(row["freshness_id"]))
+
     def export_run(self, run_id: str) -> dict[str, Any]:
         run = self.get_run(run_id)
         with self._lock:
@@ -1299,7 +1445,13 @@ class ResearchStore:
         return {
             "research_run": run,
             "sources": [self.get_source(item, run_id=run_id) for item in source_ids],
-            "evidence": [self.get_evidence(item) for item in evidence_ids],
+            "evidence": [
+                {
+                    **self.get_evidence(item),
+                    "latest_freshness": self.get_latest_evidence_freshness(item),
+                }
+                for item in evidence_ids
+            ],
             "claims": [self.get_claim(item) for item in claim_ids],
             "outputs": [self.get_output(item) for item in output_ids],
             "ledger": self.export_ledger_rows(run_id),
