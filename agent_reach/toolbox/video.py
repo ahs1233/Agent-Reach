@@ -117,76 +117,81 @@ def extract_media_evidence_bundle(source_url: str, *, frame_interval_seconds: in
 
 
 def _extract_keyframes(src: Path, out_dir: Path, interval_seconds: int = 30) -> list[dict[str, Any]]:
-    """Extract bounded frames robustly, including short/odd-timestamp social videos."""
-    if interval_seconds < 5 or interval_seconds > 300:
-        raise TranscribeError("frame interval must be between 5 and 300 seconds")
-    if not shutil.which("ffmpeg"):
-        raise TranscribeError("ffmpeg not found in PATH")
+    """Extract real timestamped frames bounded by the source duration."""
+    if interval_seconds < 1 or interval_seconds > 300:
+        raise TranscribeError("frame interval must be between 1 and 300 seconds")
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        raise TranscribeError("ffmpeg/ffprobe not found in PATH")
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(src)],
+        capture_output=True, text=True, timeout=60,
+    )
+    try:
+        duration = max(0.0, float((probe.stdout or "0").strip()))
+    except ValueError:
+        duration = 0.0
     frame_dir = out_dir / "frames"
     frame_dir.mkdir(exist_ok=True)
     for stale in frame_dir.glob("frame_*.jpg"):
         stale.unlink()
-    pattern = frame_dir / "frame_%05d.jpg"
-
-    # Decode by frame number rather than timestamp first. This guarantees frame 0
-    # for short clips and avoids broken/non-zero social-media timestamps.
-    select_expr = f"select='eq(n\\,0)+gte(t\\,{interval_seconds})'"
-    cmd = ["ffmpeg", "-loglevel", "error", "-y", "-i", str(src), "-map", "0:v:0",
-           "-vf", select_expr + ",scale='min(1280,iw)':-2", "-fps_mode", "vfr",
-           "-frames:v", "500", "-q:v", "3", str(pattern)]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-
-    frames = sorted(frame_dir.glob("frame_*.jpg"))[:500]
+    timestamps = [0.0]
+    t = float(interval_seconds)
+    while duration > 0 and t < duration:
+        timestamps.append(t)
+        t += interval_seconds
+    frames = []
+    for i, ts in enumerate(timestamps[:48]):
+        path = frame_dir / f"frame_{i:05d}.jpg"
+        proc = subprocess.run(
+            ["ffmpeg", "-loglevel", "error", "-y", "-ss", f"{ts:.3f}", "-i", str(src),
+             "-map", "0:v:0", "-frames:v", "1", "-vf", "scale='min(1920,iw)':-2",
+             "-q:v", "2", str(path)],
+            capture_output=True, text=True, timeout=120,
+        )
+        if path.exists() and path.stat().st_size:
+            frames.append({
+                "index": len(frames), "timestamp_seconds": ts, "path": str(path),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            })
     if not frames:
-        # Hard fallback: decode exactly one first video frame with no temporal filter.
-        first = frame_dir / "frame_00001.jpg"
-        fallback = ["ffmpeg", "-loglevel", "error", "-y", "-i", str(src), "-map", "0:v:0",
-                    "-frames:v", "1", "-q:v", "3", str(first)]
-        fb = subprocess.run(fallback, capture_output=True, text=True, timeout=120)
-        frames = sorted(frame_dir.glob("frame_*.jpg"))[:500]
-        if not frames:
-            detail = (fb.stderr or proc.stderr or "no decodable video frame").strip()[:500]
-            raise TranscribeError(f"frame extraction failed: {detail}")
+        raise TranscribeError("frame extraction produced no decodable frames")
+    return frames
 
-    return [{"index": i, "timestamp_seconds": 0.0 if i == 0 else float(i * interval_seconds),
-             "path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
-            for i, p in enumerate(frames)]
+
+def _ocr_variant(frame_path: str, *, psm: str) -> str:
+    proc = subprocess.run(
+        ["tesseract", frame_path, "stdout", "-l", "ara+eng", "--psm", psm,
+         "-c", "preserve_interword_spaces=1"],
+        capture_output=True, text=True, timeout=60,
+    )
+    return (proc.stdout or "").strip()
+
 
 def extract_visual_ocr_local(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Free local OCR over timestamped frames; preserves visual provenance."""
+    """Multi-pass local OCR with noise rejection for charts and social-video overlays."""
     if not shutil.which("tesseract"):
         raise TranscribeError("tesseract not found in PATH")
     events = []
     for frame in frames:
-        cmd = ["tesseract", str(frame["path"]), "stdout", "-l", "ara+eng", "--psm", "11"]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        text = (proc.stdout or "").strip()
+        candidates = [_ocr_variant(frame["path"], psm=mode) for mode in ("6", "11", "12")]
+        def score(text: str) -> tuple[int, int]:
+            useful = sum(ch.isalnum() for ch in text)
+            return (useful, -len(text))
+        best = max(candidates, key=score, default="")
+        useful = sum(ch.isalnum() for ch in best)
+        noisy = useful < 3
         events.append({
             "kind": "visual_ocr",
             "timestamp_seconds": float(frame["timestamp_seconds"]),
             "citation": f"media:{float(frame['timestamp_seconds']):.1f}",
             "frame_sha256": frame["sha256"],
-            "visible_text": text,
-            "has_text": bool(text),
+            "visible_text": "" if noisy else best,
+            "has_text": not noisy,
+            "ocr_passes": 3,
+            "ocr_quality": "LOW" if noisy else "RAW",
         })
     return events
-
-
-def build_av_evidence_timeline(speech_evidence: dict[str, Any], visual_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Align speech and OCR evidence chronologically without claiming semantic agreement."""
-    events = []
-    for seg in speech_evidence.get("evidence") or []:
-        events.append({
-            "kind": "speech",
-            "timestamp_seconds": seg["start_seconds"],
-            "end_seconds": seg["end_seconds"],
-            "citation": seg["citation"],
-            "text": seg["text"],
-            "confidence": seg.get("confidence"),
-        })
-    events.extend(visual_events)
-    return sorted(events, key=lambda x: float(x.get("timestamp_seconds", 0.0)))
-
 
 def build_unified_timeline(segments: list[dict[str, Any]],
                            visual_events: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
