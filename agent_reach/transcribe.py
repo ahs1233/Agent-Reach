@@ -253,26 +253,31 @@ def download_audio(url: str, out_dir: Path) -> Path:
     _assert_safe_public_url(url)
     _require("yt-dlp")
     template = out_dir / "source.%(ext)s"
-    _run(
-        [
-            "yt-dlp",
-            "--js-runtimes",
-            "node",
-            "-x",
-            "--audio-format",
-            "m4a",
-            "--audio-quality",
-            "0",
-            "--no-playlist",
-            "--max-filesize",
-            str(MAX_SOURCE_BYTES),
-            "-o",
-            str(template),
-            "--",
-            url,
-        ],
-        timeout=1800,  # long podcasts over slow networks — generous but bounded
-    )
+    common = [
+        "yt-dlp", "--js-runtimes", "node", "-x",
+        "--audio-format", "m4a", "--audio-quality", "0",
+        "--no-playlist", "--max-filesize", str(MAX_SOURCE_BYTES),
+        "-o", str(template),
+    ]
+    try:
+        _run(common + ["--", url], timeout=1800)
+    except TranscribeError as first_error:
+        host = (urlparse(url if "://" in url else "https://" + url).hostname or "").lower()
+        if host not in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}:
+            raise
+        fallback = common + [
+            "--extractor-args",
+            "youtube:player_client=mweb;youtubepot-bgutilhttp:base_url="
+            + os.environ.get("YTDLP_POT_PROVIDER_URL", "http://127.0.0.1:4416"),
+            "--", url,
+        ]
+        try:
+            _run(fallback, timeout=1800)
+        except TranscribeError as second_error:
+            raise TranscribeError(
+                "audio acquisition failed with default and mweb YouTube "
+                f"clients; default={first_error}; mweb={second_error}"
+            ) from second_error
     files = sorted(out_dir.glob("source.*"))
     if not files:
         limit_mib = MAX_SOURCE_BYTES // (1024 * 1024)
@@ -282,7 +287,6 @@ def download_audio(url: str, out_dir: Path) -> Path:
     audio = files[0]
     _require_size_at_most(audio, MAX_SOURCE_BYTES, "downloaded source")
     return audio
-
 
 
 def download_video_for_frames(url: str, out_dir: Path) -> Path:
