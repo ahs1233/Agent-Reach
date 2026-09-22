@@ -25,6 +25,10 @@ RUN pip install --no-cache-dir . \
 
 RUN npm install --prefix /app youtubei.js@latest
 
+# Bake the local Whisper model into the image so startup never depends on HF Hub.
+ARG AHMED_LOCAL_WHISPER_MODEL=small
+RUN python -c "from faster_whisper import WhisperModel; WhisperModel(\'${AHMED_LOCAL_WHISPER_MODEL}\', device=\'cpu\', compute_type=\'int8\')"
+
 # Install the matching bgutil PO-token runtime in the same container so
 # yt-dlp can reach it over loopback without provisioning a Railway sidecar.
 ARG BGUTIL_POT_VERSION=2.0.0
