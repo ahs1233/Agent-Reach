@@ -1,0 +1,17 @@
+name: Ruff Import Debug
+on:
+  push:
+    branches:
+      - feat/research-engine-sprint1-evidence-foundation
+
+jobs:
+  diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff==0.16.8
+      - name: Show Ruff import fix
+        run: ruff check agent_reach/toolbox/sprint1_live_acceptance.py --select I001 --fix --diff || true
