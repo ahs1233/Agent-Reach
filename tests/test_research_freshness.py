@@ -196,3 +196,17 @@ def test_custom_max_age_policy() -> None:
     )
     assert result["status"] == "FRESH"
     assert result["max_age_seconds"] == 7200.0
+
+
+
+def test_latest_release_overlap_with_coarse_date_is_uncertain() -> None:
+    result = evaluate_freshness(
+        data_cutoff="2026-09",
+        publication_date="2026-09-30",
+        retrieved_at="2026-09-30T12:00:00Z",
+        policy_name="macro_indicator",
+        as_of="2026-09-30T12:00:00Z",
+        latest_known_cutoff="2026-09-15",
+    )
+    assert result["status"] == "UNCERTAIN"
+    assert result["reason_code"] == "DATE_PRECISION_OVERLAPS_LATEST_RELEASE"
