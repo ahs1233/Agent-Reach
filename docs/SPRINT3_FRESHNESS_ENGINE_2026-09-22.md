@@ -123,7 +123,8 @@ This is deliberate. The engine will not infer "latest" merely because a page was
 
 When the caller supplies `latest_known_cutoff`:
 - older evidence → STALE;
-- matching/overlapping release → FRESH;
+- exact same cutoff/precision → FRESH;
+- coarse date ranges that merely overlap the latest release → UNCERTAIN;
 - evidence newer than the declared latest reference → FRESH with an explicit reason.
 
 Discovery of the actual latest release belongs to the research/acquisition workflow.
