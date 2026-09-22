@@ -262,6 +262,60 @@ def research_tool_specs() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "research_evaluate_freshness",
+            "description": (
+                "Evaluate one EvidenceItem against a metric-specific freshness policy. "
+                "Freshness is based on the source data_cutoff, not publication date. "
+                "Returns categorical status and age bounds without false precision."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "required": ["evidence_id", "policy_name"],
+                "properties": {
+                    "evidence_id": {"type": "string"},
+                    "policy_name": {
+                        "type": "string",
+                        "enum": [
+                            "market_price",
+                            "breaking_news",
+                            "macro_indicator",
+                            "company_guidance",
+                            "technology_state",
+                            "structural_data",
+                            "academic_evidence",
+                            "custom_max_age",
+                        ],
+                    },
+                    "as_of": {
+                        "type": "string",
+                        "description": "ISO date/datetime; defaults to evaluation time.",
+                    },
+                    "max_age_seconds": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                    },
+                    "latest_known_cutoff": {
+                        "type": "string",
+                        "description": (
+                            "Required for LATEST_RELEASE policies to determine whether "
+                            "the evidence matches the latest known official release."
+                        ),
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "research_get_freshness",
+            "description": "Get the latest persisted freshness evaluation for EvidenceItem.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["evidence_id"],
+                "properties": {"evidence_id": {"type": "string"}},
+                "additionalProperties": False,
+            },
+        },
+        {
             "name": "research_export_ledger",
             "description": (
                 "Export one ResearchRun with SourceRecords, EvidenceItems, Claims, "
@@ -381,6 +435,24 @@ def handle_research_tool(
 
     if name == "research_audit_output":
         return store.audit_output(str(arguments.get("output_id") or ""))
+
+    if name == "research_evaluate_freshness":
+        return store.evaluate_evidence_freshness(
+            str(arguments.get("evidence_id") or ""),
+            policy_name=str(arguments.get("policy_name") or ""),
+            as_of=arguments.get("as_of"),
+            max_age_seconds=arguments.get("max_age_seconds"),
+            latest_known_cutoff=arguments.get("latest_known_cutoff"),
+        )
+
+    if name == "research_get_freshness":
+        result = store.get_latest_evidence_freshness(
+            str(arguments.get("evidence_id") or "")
+        )
+        return result or {
+            "evidence_id": str(arguments.get("evidence_id") or ""),
+            "status": "NOT_EVALUATED",
+        }
 
     if name == "research_export_ledger":
         return store.export_run(str(arguments.get("run_id") or ""))
