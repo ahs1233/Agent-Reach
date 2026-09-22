@@ -14,7 +14,7 @@ from agent_reach.config import Config
 from agent_reach.transcribe import (
     CHUNK_SECONDS, NoProviderConfigured, TranscribeError, _provider_key,
     _require_duration_within_budget, _probe_audio_duration, chunk_audio, compress_audio,
-    download_audio, transcribe_chunk, transcribe_chunk_timed,
+    download_audio, download_video_for_frames, transcribe_chunk, transcribe_chunk_timed,
 )
 
 @dataclass(frozen=True)
@@ -639,9 +639,14 @@ def ingest_media(source_url: str, *, provider: str = "auto",
         root = Path(tmp)
         downloaded = download_audio(source_url, root)
         duration = _require_duration_within_budget(downloaded)
-        raw_frames = _extract_keyframes(downloaded, root, interval_seconds=10)
-        frames = adaptive_sample_frames(raw_frames)
-        visual_events = analyze_visual_frames(frames, config=cfg, model=vision_model) if analyze_visuals else []
+        raw_frames: list[dict[str, Any]] = []
+        frames: list[dict[str, Any]] = []
+        visual_events: list[dict[str, Any]] = []
+        if analyze_visuals:
+            visual_source = download_video_for_frames(source_url, root)
+            raw_frames = _extract_keyframes(visual_source, root, interval_seconds=10)
+            frames = adaptive_sample_frames(raw_frames)
+            visual_events = analyze_visual_frames(frames, config=cfg, model=vision_model)
         compressed = compress_audio(downloaded, root)
         chunks = chunk_audio(compressed, root, CHUNK_SECONDS)
         segments = []
@@ -674,12 +679,13 @@ def ingest_media(source_url: str, *, provider: str = "auto",
         "full_transcript": "\n\n".join(f"[{s.citation}] {s.transcript}" for s in segments if s.transcript),
         "provenance": {
             "retrieval_tool": "yt-dlp", "audio_processing": "ffmpeg",
-            "transcription_provider": selected, "timestamp_basis": "bounded audio chunks",
+            "visual_acquisition": "yt-dlp bounded video <=720p" if analyze_visuals else "disabled",
+            "transcription_provider": selected, "timestamp_basis": "provider segment timestamps with chunk offsets",
         },
         "timeline": build_unified_timeline([{**asdict(s), "citation": s.citation} for s in segments], visual_events),
         "claim_candidates": extract_claim_candidates({"source_url": source_url, "segments": [{**asdict(s), "citation": s.citation} for s in segments]}),
         "limitations": [
-            "timestamps are chunk-level, not word-level",
+            "timestamps are provider-segment-level when supported, with chunk fallback",
             "speaker diarization is not performed",
             "visual analysis is optional and requires a configured OpenAI multimodal model",
             "transcript statements are source evidence, not independently verified facts",
