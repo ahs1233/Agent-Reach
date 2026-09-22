@@ -1,16 +1,26 @@
 """Video/audio evidence ingestion for Ahmed Research Engine."""
+
 from __future__ import annotations
+
 import hashlib
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
+
 from agent_reach.config import Config
 from agent_reach.transcribe import (
-    CHUNK_SECONDS, NoProviderConfigured, TranscribeError, _provider_key,
-    _require_duration_within_budget, chunk_audio, compress_audio,
-    download_audio, transcribe_chunk,
+    CHUNK_SECONDS,
+    NoProviderConfigured,
+    TranscribeError,
+    _provider_key,
+    _require_duration_within_budget,
+    chunk_audio,
+    compress_audio,
+    download_audio,
+    transcribe_chunk,
 )
+
 
 @dataclass(frozen=True)
 class MediaSegment:
@@ -19,9 +29,11 @@ class MediaSegment:
     end_seconds: float
     transcript: str
     transcript_sha256: str
+
     @property
     def citation(self) -> str:
         return f"media:{self.start_seconds:.1f}-{self.end_seconds:.1f}"
+
 
 def _select_provider(provider: str, config: Config) -> str:
     if provider != "auto":
@@ -35,8 +47,14 @@ def _select_provider(provider: str, config: Config) -> str:
             return candidate
     raise NoProviderConfigured("no transcription provider configured")
 
-def ingest_media(source_url: str, *, provider: str = "auto",
-                 language: str | None = None, config: Config | None = None) -> dict[str, Any]:
+
+def ingest_media(
+    source_url: str,
+    *,
+    provider: str = "auto",
+    language: str | None = None,
+    config: Config | None = None,
+) -> dict[str, Any]:
     """Return a bounded timestamped transcript manifest for a public media URL."""
     cfg = config or Config()
     selected = _select_provider(provider, cfg)
@@ -51,8 +69,15 @@ def ingest_media(source_url: str, *, provider: str = "auto",
             transcript = transcribe_chunk(chunk, selected, config=cfg).strip()
             start = float(index * CHUNK_SECONDS)
             end = min(float((index + 1) * CHUNK_SECONDS), duration)
-            segments.append(MediaSegment(index, start, end, transcript,
-                hashlib.sha256(transcript.encode("utf-8")).hexdigest()))
+            segments.append(
+                MediaSegment(
+                    index,
+                    start,
+                    end,
+                    transcript,
+                    hashlib.sha256(transcript.encode("utf-8")).hexdigest(),
+                )
+            )
     return {
         "source_url": source_url,
         "media_type": "video_or_audio",
@@ -60,10 +85,14 @@ def ingest_media(source_url: str, *, provider: str = "auto",
         "provider": selected,
         "language_hint": language,
         "segments": [{**asdict(s), "citation": s.citation} for s in segments],
-        "full_transcript": "\n\n".join(f"[{s.citation}] {s.transcript}" for s in segments if s.transcript),
+        "full_transcript": "\n\n".join(
+            f"[{s.citation}] {s.transcript}" for s in segments if s.transcript
+        ),
         "provenance": {
-            "retrieval_tool": "yt-dlp", "audio_processing": "ffmpeg",
-            "transcription_provider": selected, "timestamp_basis": "bounded audio chunks",
+            "retrieval_tool": "yt-dlp",
+            "audio_processing": "ffmpeg",
+            "transcription_provider": selected,
+            "timestamp_basis": "bounded audio chunks",
         },
         "limitations": [
             "timestamps are chunk-level, not word-level",

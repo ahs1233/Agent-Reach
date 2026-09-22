@@ -28,6 +28,7 @@ from agent_reach.channels.web import WebChannel
 
 from .research import ResearchStore
 from .research_mcp import handle_research_tool, research_tool_specs
+from .retrieval import retrieve_with_fallback
 from .video import ingest_media
 
 _MAX_REMOTE_RESPONSE_BYTES = 5 * 1024 * 1024
@@ -401,6 +402,43 @@ class AhmedToolboxGateway:
                 "inputSchema": {"type": "object", "required": ["url"], "properties": {"url": {"type": "string"}, "provider": {"type": "string", "enum": ["auto", "groq", "openai"], "default": "auto"}, "language": {"type": "string"}}, "additionalProperties": False},
             },
             {
+                "name": "reach_retrieve_url",
+                "description": (
+                    "Retrieve a public page through the controlled fallback state machine: "
+                    "Jina -> Scrapling fetch -> Scrapling stealthy -> optional configured "
+                    "browser backend. Returns content plus every attempt/reason."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["url"],
+                    "properties": {
+                        "url": {"type": "string", "minLength": 1, "maxLength": 2000},
+                        "max_chars": {
+                            "type": "integer",
+                            "minimum": 1000,
+                            "maximum": 200000,
+                            "default": 100000,
+                        },
+                        "min_chars": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 200000,
+                            "default": 200,
+                        },
+                        "required_terms": {
+                            "type": "array",
+                            "maxItems": 20,
+                            "items": {"type": "string", "maxLength": 500},
+                        },
+                        "require_all_terms": {
+                            "type": "boolean",
+                            "default": True,
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "reach_read_url",
                 "description": (
                     "Read a public HTTP(S) page through Agent Reach's Jina Reader "
@@ -576,6 +614,54 @@ class AhmedToolboxGateway:
             except Exception as exc:  # noqa: BLE001
                 return self._text_result(f"Media ingestion failed: {exc}", is_error=True)
             return self._text_result(json.dumps(manifest, ensure_ascii=False))
+
+        if name == "reach_retrieve_url":
+            url = str(arguments.get("url") or "").strip()
+            if not url:
+                return self._text_result("url is required", is_error=True)
+            try:
+                max_chars = int(arguments.get("max_chars") or 100000)
+                min_chars = int(arguments.get("min_chars") or 200)
+            except (TypeError, ValueError):
+                return self._text_result(
+                    "max_chars and min_chars must be integers",
+                    is_error=True,
+                )
+            required_terms = arguments.get("required_terms") or []
+            if not isinstance(required_terms, list):
+                return self._text_result(
+                    "required_terms must be an array",
+                    is_error=True,
+                )
+            browser_tool = os.environ.get(
+                "AHMED_TOOLBOX_BROWSER_FALLBACK_TOOL",
+                "",
+            ).strip()
+            if browser_tool == "reach_retrieve_url":
+                browser_tool = ""
+            try:
+                outcome = retrieve_with_fallback(
+                    url,
+                    call_tool=lambda tool_name, tool_args: self.call_tool(
+                        tool_name,
+                        tool_args,
+                    ),
+                    max_chars=max_chars,
+                    min_chars=min_chars,
+                    required_terms=[str(item) for item in required_terms],
+                    require_all_terms=bool(
+                        arguments.get("require_all_terms", True)
+                    ),
+                    browser_tool=browser_tool or None,
+                )
+            except (TypeError, ValueError) as exc:
+                return self._text_result(
+                    f"retrieval fallback error: {exc}",
+                    is_error=True,
+                )
+            return self._text_result(
+                json.dumps(outcome, ensure_ascii=False, default=str)
+            )
 
         if name == "reach_read_url":
             url = str(arguments.get("url") or "").strip()

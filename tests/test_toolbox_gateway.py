@@ -342,3 +342,47 @@ def test_agent_reach_web_search_reports_both_route_failures(monkeypatch):
     assert "both routes" in text
     assert "config lookup failed" in text
     assert "hosted exa unavailable" in text
+
+
+
+def test_retrieval_fallback_tool_is_exposed() -> None:
+    gateway = AhmedToolboxGateway(
+        {"scrapling": _FakeRemote(allowed=("fetch", "stealthy_fetch"))},
+        agent_reach=_FakeReach(),
+    )
+
+    names = {tool["name"] for tool in gateway.list_tools()}
+
+    assert "reach_retrieve_url" in names
+
+
+def test_retrieval_fallback_tool_escalates_through_gateway(monkeypatch) -> None:
+    gateway = AhmedToolboxGateway(
+        {"scrapling": _FakeRemote(allowed=("fetch", "stealthy_fetch"))},
+        agent_reach=_FakeReach(),
+    )
+
+    def broken_read(self, url):
+        del self, url
+        raise RuntimeError("jina blocked")
+
+    monkeypatch.setattr(
+        "agent_reach.toolbox.gateway.WebChannel.read",
+        broken_read,
+    )
+
+    result = gateway.call_tool(
+        "reach_retrieve_url",
+        {
+            "url": "https://example.com",
+            "min_chars": 1,
+        },
+    )
+
+    assert result["isError"] is False
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["status"] == "SUCCESS"
+    assert payload["final_tool"] == "scrapling__fetch"
+    assert payload["attempts"][0]["tool"] == "reach_read_url"
+    assert payload["attempts"][0]["status"] == "FAILED"
+    assert payload["attempts"][1]["status"] == "SUCCESS"
