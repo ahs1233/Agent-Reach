@@ -60,7 +60,7 @@ def test_tool_error_escalates_from_jina_to_scrapling() -> None:
     assert result["status"] == "SUCCESS"
     assert result["final_tool"] == "scrapling__fetch"
     assert [item["status"] for item in result["attempts"]] == [
-        "FAILED",
+        "BLOCKED",
         "SUCCESS",
     ]
     assert calls == ["reach_read_url", "scrapling__fetch"]
