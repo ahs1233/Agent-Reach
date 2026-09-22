@@ -1176,6 +1176,9 @@ class ResearchStore:
                                 "reference_period": evidence["reference_period"],
                                 "observation_type": evidence["observation_type"],
                                 "forecast_horizon": evidence["forecast_horizon"],
+                                "latest_freshness": self.get_latest_evidence_freshness(
+                                    evidence["evidence_id"]
+                                ),
                                 "source_id": source["source_id"],
                                 "source_url": source["canonical_url"],
                                 "publisher": source["publisher"],
