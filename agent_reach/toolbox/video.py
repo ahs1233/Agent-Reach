@@ -93,6 +93,69 @@ def extract_claim_candidates(manifest: dict[str, Any]) -> list[dict[str, Any]]:
         })
     return claims
 
+
+def register_media_evidence(store: Any, run_id: str, manifest: dict[str, Any]) -> dict[str, Any]:
+    """Persist a media manifest and its timestamped statements into the Evidence Ledger."""
+    source_url = str(manifest.get("source_url") or "").strip()
+    transcript = str(manifest.get("full_transcript") or "").strip()
+    if not source_url or not transcript:
+        raise ValueError("media manifest requires source_url and full_transcript")
+    source = store.record_source(
+        run_id,
+        url=source_url,
+        content=transcript,
+        retrieval_tool="ahmed-toolbox",
+        retrieval_method="media_transcription",
+        source_type="VIDEO_AUDIO",
+        primary_source=True,
+        metadata={
+            "duration_seconds": manifest.get("duration_seconds"),
+            "transcription_provider": manifest.get("provider"),
+            "provenance": manifest.get("provenance") or {},
+            "visual_frames": manifest.get("visual_frames") or [],
+        },
+        retrieval_history=[
+            {"stage": "ACQUISITION", "tool": "yt-dlp", "method": "audio/video retrieval", "status": "SUCCESS"},
+            {"stage": "TRANSCRIPTION", "tool": str(manifest.get("provider") or "unknown"), "method": "speech_to_text", "status": "SUCCESS"},
+        ],
+    )
+    evidence = []
+    for candidate in manifest.get("claim_candidates") or []:
+        passage = str(candidate.get("statement_source_text") or "").strip()
+        if not passage:
+            continue
+        item = store.add_evidence(
+            run_id,
+            source_id=source["source_id"],
+            supporting_passage=passage,
+            observation_type="UNKNOWN",
+            structured_fact={
+                "media_citation": candidate.get("citation"),
+                "start_seconds": candidate.get("start_seconds"),
+                "end_seconds": candidate.get("end_seconds"),
+                "verification_status": "UNVERIFIED_SOURCE_STATEMENT",
+            },
+            extraction_method="timestamped_media_transcription",
+        )
+        evidence.append(item)
+    return {"source": source, "evidence_items": evidence, "evidence_count": len(evidence)}
+
+
+def verification_queries(manifest: dict[str, Any], max_queries: int = 20) -> list[dict[str, Any]]:
+    """Create bounded external-verification work items from media claims."""
+    work = []
+    for candidate in (manifest.get("claim_candidates") or [])[:max_queries]:
+        statement = str(candidate.get("statement_source_text") or "").strip()
+        if statement:
+            work.append({
+                "candidate_id": candidate.get("candidate_id"),
+                "query": statement[:1000],
+                "citation": candidate.get("citation"),
+                "required_source_relation": "INDEPENDENT_WHEN_POSSIBLE",
+                "accept_source_claim_as_verified": False,
+            })
+    return work
+
 def ingest_media(source_url: str, *, provider: str = "auto",
                  language: str | None = None, config: Config | None = None) -> dict[str, Any]:
     """Return a bounded timestamped transcript manifest for a public media URL."""
