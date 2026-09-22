@@ -248,13 +248,30 @@ def _assert_safe_public_url(url: str) -> None:
         raise TranscribeError("SSRF blocked: private/internal IP is not allowed")
 
 
+def _ytdlp_network_args() -> list[str]:
+    """Optional acquisition network/auth arguments shared by yt-dlp paths.
+
+    Secrets stay in Railway/environment variables and are never logged by us.
+    YTDLP_PROXY is intended for a user-controlled/authorized egress proxy.
+    YTDLP_COOKIES_FILE is an optional mounted Netscape cookies file.
+    """
+    args: list[str] = []
+    proxy = os.environ.get("YTDLP_PROXY", "").strip()
+    cookies_file = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
+    if proxy:
+        args += ["--proxy", proxy]
+    if cookies_file:
+        args += ["--cookies", cookies_file]
+    return args
+
+
 def download_audio(url: str, out_dir: Path) -> Path:
     """Download audio with yt-dlp into out_dir; return the resulting file path."""
     _assert_safe_public_url(url)
     _require("yt-dlp")
     template = out_dir / "source.%(ext)s"
     common = [
-        "yt-dlp", "--js-runtimes", "node", "-x",
+        "yt-dlp", "--js-runtimes", "node", *_ytdlp_network_args(), "-x",
         "--audio-format", "m4a", "--audio-quality", "0",
         "--no-playlist", "--max-filesize", str(MAX_SOURCE_BYTES),
         "-o", str(template),
@@ -300,7 +317,7 @@ def download_video_for_frames(url: str, out_dir: Path) -> Path:
     _require("yt-dlp")
     template = out_dir / "visual_source.%(ext)s"
     cmd = [
-        "yt-dlp", "--js-runtimes", "node", "--no-playlist", "--max-filesize", str(MAX_SOURCE_BYTES),
+        "yt-dlp", "--js-runtimes", "node", *_ytdlp_network_args(), "--no-playlist", "--max-filesize", str(MAX_SOURCE_BYTES),
         "--retries", "3", "--fragment-retries", "3",
         "-f", "bestvideo[height<=720]/best[height<=720]/bestvideo/best",
         "-o", str(template), "--", url,
