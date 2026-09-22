@@ -118,6 +118,23 @@ This enables later fallback-state and retrieval-quality analysis without changin
 6. Re-fetching unchanged content reuses the same SourceRecord; changed content creates a new version.
 7. A complete Evidence Ledger can be exported from one ResearchRun.
 
+## Controlled rollout
+
+The `research_*` MCP write tools are feature-gated by:
+
+```text
+AHMED_RESEARCH_ENABLED=1
+```
+
+Default is disabled.
+
+Reason: the current public Ahmed Toolbox endpoint is intentionally unauthenticated
+for ChatGPT compatibility. Sprint 1 adds write-capable research-state tools, so
+they must not be exposed on the public production gateway until authentication
+or an equivalent protected deployment boundary is in place.
+
+The isolated Railway Sprint 1 validation service enables the flag explicitly.
+
 ## Explicitly out of scope
 
 Do not implement in Sprint 1:
