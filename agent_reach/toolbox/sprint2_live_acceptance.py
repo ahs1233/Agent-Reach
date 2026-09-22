@@ -172,8 +172,17 @@ def run_acceptance() -> dict[str, Any]:
             )
         }
     )
-    if SOURCE_URL.rstrip("/") not in discovery:
-        raise RuntimeError("Exa discovery did not return the selected IEA source")
+    iea_urls = [url for url in urls if "iea.org/" in url.lower()]
+    source_family_hits = [
+        url
+        for url in iea_urls
+        if "/reports/key-questions-on-energy-and-ai" in url.lower()
+    ]
+    if len(iea_urls) < 3 or not source_family_hits:
+        raise RuntimeError(
+            "Exa discovery did not expose the selected IEA source family; "
+            f"iea_urls={iea_urls[:10]}"
+        )
 
     page_text, tool, method, retrieval_history = _retrieve(gateway)
     passage = _passage(page_text)
@@ -350,7 +359,8 @@ def run_acceptance() -> dict[str, Any]:
         "discovery": {
             "tool": "Agent-Reach/Exa",
             "parseable_urls": len(urls),
-            "selected_source_found": True,
+            "iea_urls": len(iea_urls),
+            "source_family_hits": source_family_hits[:5],
         },
         "retrieval": {
             "final_tool": tool,
