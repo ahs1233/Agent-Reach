@@ -212,7 +212,10 @@ def test_alert_preserves_claim_evidence_source_chain() -> None:
     chain = output["fragments"][0]["provenance_refs"][0]
     assert chain["claim_id"] == claim["claim_id"]
     assert chain["evidence"][0]["evidence_id"] == evidence["evidence_id"]
+    assert chain["evidence"][0]["supporting_passage"] == evidence["supporting_passage"]
+    assert chain["evidence"][0]["structured_fact"] == evidence["structured_fact"]
     assert chain["evidence"][0]["source_id"] == source["source_id"]
+    assert chain["evidence"][0]["content_hash_scope"] == "retrieved_representation"
     assert output["output_type"] == "ALERT"
 
 
