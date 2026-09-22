@@ -11,7 +11,7 @@ import re
 import sys
 from typing import Any
 
-from agent_reach.toolbox.gateway import AhmedToolboxGateway
+from .gateway import AhmedToolboxGateway
 
 
 QUESTION = "What do current IEA projections say about data-centre electricity demand through 2030?"
