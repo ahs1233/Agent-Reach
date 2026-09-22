@@ -407,3 +407,62 @@ def test_sprint1_claim_semantics_can_be_backfilled_from_supporting_evidence() ->
 
     migrated = store.get_claim(claim["claim_id"])
     assert migrated["observation_type"] == "FORECAST"
+
+
+
+def test_verified_claim_cannot_relabel_forecast_evidence_as_actual() -> None:
+    store = ResearchStore(":memory:")
+    run = store.create_run("Verified claim semantic integrity")
+    source = store.record_source(
+        run["run_id"],
+        url="https://example.com/verified-forecast",
+        content="Projection reaches 950 TWh in 2030.",
+        retrieval_tool="fixture",
+        retrieval_method="deterministic",
+        retrieval_status="SUCCESS",
+    )
+    evidence = store.add_evidence(
+        run["run_id"],
+        source_id=source["source_id"],
+        supporting_passage="Projection reaches 950 TWh in 2030.",
+        observation_type="FORECAST",
+    )
+
+    with pytest.raises(ValueError, match="verified claim semantic mismatch"):
+        store.add_claim(
+            run["run_id"],
+            statement="Electricity use is 950 TWh in 2030.",
+            classification="VERIFIED",
+            observation_type="ACTUAL",
+            supporting_evidence_ids=[evidence["evidence_id"]],
+        )
+
+
+def test_inference_may_explicitly_transform_semantics_without_being_verified() -> None:
+    store = ResearchStore(":memory:")
+    run = store.create_run("Inference semantic transform")
+    source = store.record_source(
+        run["run_id"],
+        url="https://example.com/actual-input",
+        content="Observed input value is 10.",
+        retrieval_tool="fixture",
+        retrieval_method="deterministic",
+        retrieval_status="SUCCESS",
+    )
+    evidence = store.add_evidence(
+        run["run_id"],
+        source_id=source["source_id"],
+        supporting_passage="Observed input value is 10.",
+        observation_type="ACTUAL",
+    )
+    claim = store.add_claim(
+        run["run_id"],
+        statement="Model projects the derived value may reach 20.",
+        classification="INFERENCE",
+        observation_type="FORECAST",
+        supporting_evidence_ids=[evidence["evidence_id"]],
+        provenance={"semantic_derivation": "model-based projection from actual input"},
+    )
+
+    assert claim["observation_type"] == "FORECAST"
+    assert claim["classification"] == "INFERENCE"
