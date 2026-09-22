@@ -1,4 +1,4 @@
-"""MCP surface for Ahmed Research Engine evidence and output integrity."""
+"""MCP surface for Ahmed Research Engine evidence and integrity layers."""
 
 from __future__ import annotations
 
@@ -102,6 +102,42 @@ def research_tool_specs() -> list[dict[str, Any]]:
                             "additionalProperties": False,
                         },
                     },
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "research_record_source_relationship",
+            "description": (
+                "Record an explicit relationship between two sources in the same run. "
+                "Use dependency relationships for copied/syndicated/mirrored sources, "
+                "or INDEPENDENT_OF only when independence has been established."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "required": [
+                    "run_id",
+                    "source_id",
+                    "related_source_id",
+                    "relationship_type",
+                ],
+                "properties": {
+                    "run_id": {"type": "string"},
+                    "source_id": {"type": "string"},
+                    "related_source_id": {"type": "string"},
+                    "relationship_type": {
+                        "type": "string",
+                        "enum": [
+                            "DERIVED_FROM",
+                            "SYNDICATED_FROM",
+                            "MIRRORS",
+                            "INDEPENDENT_OF",
+                            "CITES",
+                            "QUOTES",
+                        ],
+                    },
+                    "basis": {"type": "string", "maxLength": 5000},
+                    "metadata": {"type": "object"},
                 },
                 "additionalProperties": False,
             },
@@ -262,6 +298,33 @@ def research_tool_specs() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "research_evaluate_source_independence",
+            "description": (
+                "Evaluate one Claim's supporting sources conservatively. Different URLs "
+                "do not count as independent by themselves. Returns raw source/URL count, "
+                "effective lineage count, verified independence pairs, and a strict "
+                "confidence-basis source count."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "required": ["claim_id"],
+                "properties": {"claim_id": {"type": "string"}},
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "research_get_source_independence",
+            "description": (
+                "Get the latest persisted source-independence evaluation for a Claim."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "required": ["claim_id"],
+                "properties": {"claim_id": {"type": "string"}},
+                "additionalProperties": False,
+            },
+        },
+        {
             "name": "research_evaluate_freshness",
             "description": (
                 "Evaluate one EvidenceItem against a metric-specific freshness policy. "
@@ -385,6 +448,16 @@ def handle_research_tool(
             retrieval_history=arguments.get("retrieval_history"),
         )
 
+    if name == "research_record_source_relationship":
+        return store.record_source_relationship(
+            str(arguments.get("run_id") or ""),
+            source_id=str(arguments.get("source_id") or ""),
+            related_source_id=str(arguments.get("related_source_id") or ""),
+            relationship_type=str(arguments.get("relationship_type") or ""),
+            basis=arguments.get("basis"),
+            metadata=arguments.get("metadata") or {},
+        )
+
     if name == "research_add_evidence":
         return store.add_evidence(
             str(arguments.get("run_id") or ""),
@@ -435,6 +508,20 @@ def handle_research_tool(
 
     if name == "research_audit_output":
         return store.audit_output(str(arguments.get("output_id") or ""))
+
+    if name == "research_evaluate_source_independence":
+        return store.evaluate_claim_source_independence(
+            str(arguments.get("claim_id") or "")
+        )
+
+    if name == "research_get_source_independence":
+        result = store.get_latest_claim_source_independence(
+            str(arguments.get("claim_id") or "")
+        )
+        return result or {
+            "claim_id": str(arguments.get("claim_id") or ""),
+            "status": "NOT_EVALUATED",
+        }
 
     if name == "research_evaluate_freshness":
         return store.evaluate_evidence_freshness(
