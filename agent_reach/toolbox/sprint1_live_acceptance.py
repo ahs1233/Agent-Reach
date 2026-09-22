@@ -13,7 +13,6 @@ from typing import Any
 
 from agent_reach.toolbox.gateway import AhmedToolboxGateway
 
-
 QUESTION = "What do current IEA projections say about data-centre electricity demand through 2030?"
 CUTOFF = "2026-09-22"
 
