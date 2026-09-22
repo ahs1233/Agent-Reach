@@ -28,7 +28,7 @@ SOURCES = [
         "reference_period": "2025-2030",
         "observation_type": "FORECAST",
         "forecast_horizon": "2030",
-        "needles": ["485 TWh", "950 TWh"],
+        "needle_groups": [["485 TWh"], ["950 TWh"]],
     },
     {
         "url": "https://www.iea.org/reports/energy-and-ai/energy-demand-from-ai",
@@ -40,7 +40,7 @@ SOURCES = [
         "reference_period": "2024-2030",
         "observation_type": "FORECAST",
         "forecast_horizon": "2030",
-        "needles": ["945", "TWh"],
+        "needle_groups": [["945"], ["TWh"]],
     },
     {
         "url": "https://www.iea.org/reports/electricity-2026/executive-summary",
@@ -52,7 +52,7 @@ SOURCES = [
         "reference_period": "2025-2030",
         "observation_type": "FORECAST",
         "forecast_horizon": "2030",
-        "needles": ["data centres", "data centers", "2030", "advanced economies"],
+        "needle_groups": [["data centres", "data centers"], ["2030"], ["advanced economies"]],
     },
 ]
 
@@ -102,12 +102,31 @@ def _extract_payload_text(raw: str) -> str:
     return raw
 
 
-def _passage(text: str, needles: list[str], radius: int = 900) -> str:
+def _matched_positions(
+    text: str, needle_groups: list[list[str]]
+) -> list[int] | None:
     lowered = text.lower()
-    positions = [lowered.find(needle.lower()) for needle in needles]
-    positions = [pos for pos in positions if pos >= 0]
+    positions: list[int] = []
+    for alternatives in needle_groups:
+        group_positions = [
+            lowered.find(str(needle).lower())
+            for needle in alternatives
+            if lowered.find(str(needle).lower()) >= 0
+        ]
+        if not group_positions:
+            return None
+        positions.append(min(group_positions))
+    return positions
+
+
+def _passage(
+    text: str, needle_groups: list[list[str]], radius: int = 900
+) -> str:
+    positions = _matched_positions(text, needle_groups)
     if not positions:
-        raise RuntimeError(f"expected evidence tokens not found: {needles}")
+        raise RuntimeError(
+            f"expected evidence groups not found: {needle_groups}"
+        )
     start = max(0, min(positions) - radius)
     end = min(len(text), max(positions) + radius)
     return " ".join(text[start:end].split())
@@ -135,9 +154,11 @@ def _retrieve(
                 raw = _call(gateway, tool, {"url": spec["url"]})
                 text = _extract_payload_text(raw)
 
-            lowered = text.lower()
-            if not any(str(needle).lower() in lowered for needle in spec["needles"]):
-                detail = "retrieval succeeded but expected evidence tokens were absent"
+            if _matched_positions(text, spec["needle_groups"]) is None:
+                detail = (
+                    "retrieval succeeded but the representation was incomplete "
+                    "for the required evidence groups"
+                )
                 history.append(
                     {
                         "stage": "RETRIEVAL",
@@ -214,7 +235,7 @@ def run_acceptance() -> dict[str, Any]:
 
     for spec in SOURCES:
         page_text, tool, method, attempt_history = _retrieve(gateway, spec)
-        passage = _passage(page_text, spec["needles"])
+        passage = _passage(page_text, spec["needle_groups"])
         retrieval_history = [
             {
                 "stage": "DISCOVERY",
