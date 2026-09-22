@@ -174,6 +174,82 @@ TRANSCRIPT:
 
 
 
+
+def evaluate_video_intelligence(manifest: dict[str, Any], *,
+                                understanding: dict[str, Any] | None = None,
+                                longitudinal: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Deterministic baseline metrics for Video Intelligence quality/cost regressions."""
+    segments = manifest.get("segments") or []
+    frames = manifest.get("visual_frames") or []
+    visual_events = manifest.get("visual_events") or []
+    duration = float(manifest.get("duration_seconds") or 0.0)
+    transcript_chars = sum(len(str(x.get("transcript") or "")) for x in segments)
+    cited_segments = sum(1 for x in segments if x.get("citation"))
+    ocr_events = sum(1 for x in visual_events
+                     if str((x.get("analysis") or {}).get("visible_text") or "").strip())
+    graph = build_media_knowledge_graph(longitudinal or {})
+    contradictions = (longitudinal or {}).get("internal_contradictions") or []
+    chapters = (longitudinal or {}).get("chapters") or []
+    return {
+        "schema_version": "video-eval-v1",
+        "duration_seconds": duration,
+        "speech": {
+            "segment_count": len(segments),
+            "transcript_chars": transcript_chars,
+            "citation_coverage": (cited_segments / len(segments)) if segments else 0.0,
+            "average_segment_seconds": (duration / len(segments)) if segments and duration else None,
+        },
+        "visual": {
+            "sampled_frame_count": len(frames),
+            "analyzed_frame_count": len(visual_events),
+            "ocr_event_count": ocr_events,
+            "analysis_coverage": (len(visual_events) / len(frames)) if frames else 0.0,
+        },
+        "reasoning": {
+            "has_deep_understanding": bool(understanding),
+            "chapter_count": len(chapters),
+            "knowledge_graph_nodes": graph["node_count"],
+            "knowledge_graph_edges": graph["edge_count"],
+            "internal_contradiction_count": len(contradictions),
+        },
+        "provenance": {
+            "timeline_event_count": len(manifest.get("timeline") or []),
+            "claim_candidate_count": len(manifest.get("claim_candidates") or []),
+            "visual_evidence_candidate_count": len(manifest.get("visual_evidence_candidates") or []),
+        },
+    }
+
+
+def compare_video_evaluations(baseline: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+    """Compare two benchmark snapshots without inventing a single vanity score."""
+    def get(d: dict[str, Any], path: tuple[str, ...]) -> float:
+        cur: Any = d
+        for key in path:
+            cur = (cur or {}).get(key) if isinstance(cur, dict) else None
+        return float(cur or 0.0)
+    metrics = [
+        ("speech.citation_coverage", ("speech","citation_coverage"), True),
+        ("speech.average_segment_seconds", ("speech","average_segment_seconds"), False),
+        ("visual.analysis_coverage", ("visual","analysis_coverage"), True),
+        ("reasoning.knowledge_graph_nodes", ("reasoning","knowledge_graph_nodes"), None),
+        ("reasoning.knowledge_graph_edges", ("reasoning","knowledge_graph_edges"), None),
+        ("provenance.timeline_event_count", ("provenance","timeline_event_count"), None),
+    ]
+    changes = []
+    for name, path, higher_better in metrics:
+        before, after = get(baseline, path), get(candidate, path)
+        delta = after - before
+        if higher_better is True:
+            direction = "IMPROVED" if delta > 0 else ("REGRESSED" if delta < 0 else "UNCHANGED")
+        elif higher_better is False:
+            direction = "IMPROVED" if delta < 0 else ("REGRESSED" if delta > 0 else "UNCHANGED")
+        else:
+            direction = "CHANGED" if delta else "UNCHANGED"
+        changes.append({"metric": name, "baseline": before, "candidate": after,
+                        "delta": delta, "direction": direction})
+    return {"schema_version": "video-eval-compare-v1", "changes": changes,
+            "note": "No aggregate score: quality, granularity, coverage, latency and cost must remain inspectable."}
+
 def reason_across_time(manifest: dict[str, Any], understanding: dict[str, Any] | None = None, *,
                        config: Config | None = None,
                        model: str = "gpt-5.6-luna") -> dict[str, Any]:
