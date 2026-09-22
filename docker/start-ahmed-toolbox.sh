@@ -4,7 +4,7 @@ set -eu
 POT_PORT="${YTDLP_POT_PROVIDER_PORT:-4416}"
 export YTDLP_POT_PROVIDER_URL="${YTDLP_POT_PROVIDER_URL:-http://127.0.0.1:${POT_PORT}}"
 
-node /opt/bgutil-pot/server/build/main.js --host 127.0.0.1 --port "${POT_PORT}" &
+PORT="${POT_PORT}" HOST=127.0.0.1 node /opt/bgutil-pot/server/build/main.js &
 pot_pid=$!
 
 cleanup() {
