@@ -9,7 +9,7 @@ WORKDIR /app
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       python3 python3-venv python3-pip git curl ca-certificates gh ffmpeg chromium \
+       python3 python3-venv python3-pip git curl ca-certificates gh ffmpeg chromium tesseract-ocr tesseract-ocr-ara tesseract-ocr-eng \\
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m venv /opt/venv
