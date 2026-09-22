@@ -10,9 +10,8 @@ status plus the measured age interval and policy inputs.
 from __future__ import annotations
 
 import calendar
-from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
-from typing import Any
+from typing import Any, NamedTuple
 
 
 FRESHNESS_STATUSES = {
@@ -64,8 +63,7 @@ DEFAULT_FRESHNESS_POLICIES: dict[str, dict[str, Any]] = {
 }
 
 
-@dataclass(frozen=True)
-class TemporalInterval:
+class TemporalInterval(NamedTuple):
     raw: str
     precision: str
     start: datetime
