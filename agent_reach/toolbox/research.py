@@ -815,8 +815,8 @@ class ResearchStore:
                     + ", ".join(wrong_run)
                 )
 
+            supporting_types = {evidence_types[item] for item in supporting}
             if observation_type is None:
-                supporting_types = {evidence_types[item] for item in supporting}
                 claim_observation_type = (
                     next(iter(supporting_types))
                     if len(supporting_types) == 1
@@ -827,6 +827,17 @@ class ResearchStore:
                     observation_type,
                     OBSERVATION_TYPES,
                     "claim observation_type",
+                )
+
+            if (
+                claim_type == "VERIFIED"
+                and len(supporting_types) == 1
+                and claim_observation_type != next(iter(supporting_types))
+            ):
+                raise ValueError(
+                    "verified claim semantic mismatch: supporting evidence is "
+                    f"{next(iter(supporting_types))} but claim asserted "
+                    f"{claim_observation_type}"
                 )
 
             cursor = self._conn.execute(
