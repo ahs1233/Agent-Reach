@@ -152,6 +152,42 @@ def _extract_keyframes(src: Path, out_dir: Path, interval_seconds: int = 30) -> 
              "path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
             for i, p in enumerate(frames)]
 
+def extract_visual_ocr_local(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Free local OCR over timestamped frames; preserves visual provenance."""
+    if not shutil.which("tesseract"):
+        raise TranscribeError("tesseract not found in PATH")
+    events = []
+    for frame in frames:
+        cmd = ["tesseract", str(frame["path"]), "stdout", "-l", "ara+eng", "--psm", "11"]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        text = (proc.stdout or "").strip()
+        events.append({
+            "kind": "visual_ocr",
+            "timestamp_seconds": float(frame["timestamp_seconds"]),
+            "citation": f"media:{float(frame['timestamp_seconds']):.1f}",
+            "frame_sha256": frame["sha256"],
+            "visible_text": text,
+            "has_text": bool(text),
+        })
+    return events
+
+
+def build_av_evidence_timeline(speech_evidence: dict[str, Any], visual_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Align speech and OCR evidence chronologically without claiming semantic agreement."""
+    events = []
+    for seg in speech_evidence.get("evidence") or []:
+        events.append({
+            "kind": "speech",
+            "timestamp_seconds": seg["start_seconds"],
+            "end_seconds": seg["end_seconds"],
+            "citation": seg["citation"],
+            "text": seg["text"],
+            "confidence": seg.get("confidence"),
+        })
+    events.extend(visual_events)
+    return sorted(events, key=lambda x: float(x.get("timestamp_seconds", 0.0)))
+
+
 def build_unified_timeline(segments: list[dict[str, Any]],
                            visual_events: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """Merge transcript and visual evidence without pretending either verifies the other."""
