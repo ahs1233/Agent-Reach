@@ -75,6 +75,19 @@ def _call(gateway: AhmedToolboxGateway, name: str, args: dict[str, Any]) -> str:
     return text
 
 
+def _call_json(
+    gateway: AhmedToolboxGateway, name: str, args: dict[str, Any]
+) -> dict[str, Any]:
+    raw = _call(gateway, name, args)
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{name} returned invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"{name} returned non-object JSON")
+    return payload
+
+
 def _extract_payload_text(raw: str) -> str:
     try:
         parsed = json.loads(raw)
@@ -102,13 +115,15 @@ def _passage(text: str, needles: list[str], radius: int = 900) -> str:
 
 def _retrieve(
     gateway: AhmedToolboxGateway, spec: dict[str, Any]
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, list[dict[str, Any]]]:
     preferred = str(spec["preferred_tool"])
     attempts = [preferred]
     attempts.append("scrapling__fetch" if preferred == "reach_read_url" else "reach_read_url")
 
+    history: list[dict[str, Any]] = []
     failures: list[str] = []
     for tool in attempts:
+        method = "jina_reader" if tool == "reach_read_url" else "scrapling_fetch"
         try:
             if tool == "reach_read_url":
                 text = _call(
@@ -116,20 +131,46 @@ def _retrieve(
                     tool,
                     {"url": spec["url"], "max_chars": 100000},
                 )
-                method = "jina_reader"
             else:
                 raw = _call(gateway, tool, {"url": spec["url"]})
                 text = _extract_payload_text(raw)
-                method = "scrapling_fetch"
 
             lowered = text.lower()
             if not any(str(needle).lower() in lowered for needle in spec["needles"]):
-                raise RuntimeError(
-                    "retrieval succeeded but expected evidence tokens were absent"
+                detail = "retrieval succeeded but expected evidence tokens were absent"
+                history.append(
+                    {
+                        "stage": "RETRIEVAL",
+                        "tool": tool,
+                        "method": method,
+                        "status": "PARTIAL",
+                        "detail": detail,
+                    }
                 )
-            return text, tool, method
+                failures.append(f"{tool}: {detail}")
+                continue
+
+            history.append(
+                {
+                    "stage": "RETRIEVAL",
+                    "tool": tool,
+                    "method": method,
+                    "status": "SUCCESS",
+                }
+            )
+            return text, tool, method, history
         except Exception as exc:  # noqa: BLE001
-            failures.append(f"{tool}: {type(exc).__name__}: {exc}")
+            detail = f"{type(exc).__name__}: {exc}"
+            history.append(
+                {
+                    "stage": "RETRIEVAL",
+                    "tool": tool,
+                    "method": method,
+                    "status": "FAILED",
+                    "detail": detail[:1000],
+                }
+            )
+            failures.append(f"{tool}: {detail}")
     raise RuntimeError("all retrieval paths failed; " + " | ".join(failures))
 
 
@@ -148,58 +189,70 @@ def run_acceptance() -> dict[str, Any]:
         },
     )
     discovered_urls = sorted(
-        set(re.findall(r"https?://[^\s\]\[)>(\"']+", discovery_raw))
+        set(re.findall(r"https?://[^\\s\\]\\[)>(\\\"']+", discovery_raw))
     )
 
-    run = gateway.research_store.create_run(
-        QUESTION,
-        cutoff=CUTOFF,
-        metadata={
-            "acceptance_test": "sprint1_live_e2e",
-            "discovery_tool": "Agent-Reach/Exa",
-            "discovery_requested_results": 10,
-            "discovered_url_count": len(discovered_urls),
+    run = _call_json(
+        gateway,
+        "research_start_run",
+        {
+            "question": QUESTION,
+            "cutoff": CUTOFF,
+            "metadata": {
+                "acceptance_test": "sprint1_live_e2e",
+                "discovery_tool": "Agent-Reach/Exa",
+                "discovery_requested_results": 10,
+                "discovered_url_count": len(discovered_urls),
+            },
         },
     )
-    run_id = run["run_id"]
+    run_id = str(run["run_id"])
 
     source_records: list[dict[str, Any]] = []
     evidence_records: list[dict[str, Any]] = []
+    retrieval_attempts: list[dict[str, Any]] = []
 
     for spec in SOURCES:
-        page_text, tool, method = _retrieve(gateway, spec)
+        page_text, tool, method, attempt_history = _retrieve(gateway, spec)
         passage = _passage(page_text, spec["needles"])
+        retrieval_history = [
+            {
+                "stage": "DISCOVERY",
+                "tool": "Agent-Reach/Exa",
+                "method": "reach_web_search",
+                "status": "DISCOVERED",
+            },
+            *attempt_history,
+        ]
 
-        source = gateway.research_store.record_source(
-            run_id,
-            url=spec["url"],
-            content=page_text,
-            publisher=spec["publisher"],
-            source_type="official_institution_report",
-            primary_source=True,
-            publication_date=spec["publication_date"],
-            data_cutoff=spec["data_cutoff"],
-            retrieval_tool=tool,
-            retrieval_method=method,
-            retrieval_status="SUCCESS",
-            discovered_by="Agent-Reach/Exa",
-            source_family_id=f"iea:{spec['url']}",
-            retrieval_history=[
-                {
-                    "stage": "DISCOVERY",
-                    "tool": "Agent-Reach/Exa",
-                    "method": "reach_web_search",
-                    "status": "DISCOVERED",
-                },
-                {
-                    "stage": "RETRIEVAL",
-                    "tool": tool,
-                    "method": method,
-                    "status": "SUCCESS",
-                },
-            ],
+        source = _call_json(
+            gateway,
+            "research_record_source",
+            {
+                "run_id": run_id,
+                "url": spec["url"],
+                "content": page_text[:500000],
+                "publisher": spec["publisher"],
+                "source_type": "official_institution_report",
+                "primary_source": True,
+                "publication_date": spec["publication_date"],
+                "data_cutoff": spec["data_cutoff"],
+                "retrieval_tool": tool,
+                "retrieval_method": method,
+                "retrieval_status": "SUCCESS",
+                "discovered_by": "Agent-Reach/Exa",
+                "source_family_id": f"iea:{spec['url']}",
+                "retrieval_history": retrieval_history,
+            },
         )
         source_records.append(source)
+        retrieval_attempts.append(
+            {
+                "url": spec["url"],
+                "attempts": attempt_history,
+                "final_tool": tool,
+            }
+        )
 
         structured: dict[str, Any] = {
             "metric": spec["metric"],
@@ -222,66 +275,68 @@ def run_acceptance() -> dict[str, Any]:
                 {"to_value": 945, "to_year": 2030, "unit": "TWh"}
             )
 
-        evidence = gateway.research_store.add_evidence(
-            run_id,
-            source_id=source["source_id"],
-            supporting_passage=passage,
-            structured_fact=structured,
-            metric=spec["metric"],
-            value=structured.get("to_value"),
-            unit=structured.get("unit"),
-            geography=(
-                "global"
-                if spec["metric"].startswith("data_center")
-                else "United States"
-            ),
-            reference_period=spec["reference_period"],
-            observation_type=spec["observation_type"],
-            forecast_horizon=spec["forecast_horizon"],
-            definition="IEA data-centre electricity demand projection",
-            extraction_method="deterministic_live_acceptance",
+        evidence = _call_json(
+            gateway,
+            "research_add_evidence",
+            {
+                "run_id": run_id,
+                "source_id": source["source_id"],
+                "supporting_passage": passage,
+                "structured_fact": structured,
+                "metric": spec["metric"],
+                "value": structured.get("to_value"),
+                "unit": structured.get("unit"),
+                "geography": (
+                    "global"
+                    if spec["metric"].startswith("data_center")
+                    else "United States"
+                ),
+                "reference_period": spec["reference_period"],
+                "observation_type": spec["observation_type"],
+                "forecast_horizon": spec["forecast_horizon"],
+                "definition": "IEA data-centre electricity demand projection",
+                "extraction_method": "deterministic_live_acceptance",
+            },
         )
         evidence_records.append(evidence)
 
-    claims = [
-        gateway.research_store.add_claim(
-            run_id,
-            statement=(
-                "The IEA's 2026 update projects global data-centre electricity "
-                "consumption rising from about 485 TWh in 2025 to about 950 TWh in 2030."
-            ),
-            classification="VERIFIED",
-            supporting_evidence_ids=[evidence_records[0]["evidence_id"]],
-            confidence="HIGH",
-            provenance={"acceptance_test": True},
+    claim_specs = [
+        (
+            "The IEA's 2026 update projects global data-centre electricity "
+            "consumption rising from about 485 TWh in 2025 to about 950 TWh in 2030.",
+            evidence_records[0]["evidence_id"],
         ),
-        gateway.research_store.add_claim(
-            run_id,
-            statement=(
-                "The IEA's 2025 Energy and AI base case projected global data-centre "
-                "electricity consumption reaching about 945 TWh by 2030."
-            ),
-            classification="VERIFIED",
-            supporting_evidence_ids=[evidence_records[1]["evidence_id"]],
-            confidence="HIGH",
-            provenance={"acceptance_test": True},
+        (
+            "The IEA's 2025 Energy and AI base case projected global data-centre "
+            "electricity consumption reaching about 945 TWh by 2030.",
+            evidence_records[1]["evidence_id"],
         ),
-        gateway.research_store.add_claim(
-            run_id,
-            statement=(
-                "IEA Electricity 2026 identifies data centres as a major driver of "
-                "electricity-demand growth in advanced economies through 2030."
-            ),
-            classification="VERIFIED",
-            supporting_evidence_ids=[evidence_records[2]["evidence_id"]],
-            confidence="HIGH",
-            provenance={"acceptance_test": True},
+        (
+            "IEA Electricity 2026 identifies data centres as a major driver of "
+            "electricity-demand growth in advanced economies through 2030.",
+            evidence_records[2]["evidence_id"],
         ),
     ]
+    claims: list[dict[str, Any]] = []
+    for statement, evidence_id in claim_specs:
+        claims.append(
+            _call_json(
+                gateway,
+                "research_add_claim",
+                {
+                    "run_id": run_id,
+                    "statement": statement,
+                    "classification": "VERIFIED",
+                    "supporting_evidence_ids": [evidence_id],
+                    "confidence": "HIGH",
+                    "provenance": {"acceptance_test": True},
+                },
+            )
+        )
 
-    gateway.research_store.complete_run(run_id)
-    exported = gateway.research_store.export_run(run_id)
-    audit = gateway.research_store.audit_run(run_id)
+    _call_json(gateway, "research_complete_run", {"run_id": run_id})
+    exported = _call_json(gateway, "research_export_ledger", {"run_id": run_id})
+    audit = _call_json(gateway, "research_audit_run", {"run_id": run_id})
 
     if len(exported["sources"]) != 3:
         raise RuntimeError(f"expected 3 SourceRecords, got {len(exported['sources'])}")
@@ -294,7 +349,7 @@ def run_acceptance() -> dict[str, Any]:
     if not audit["passed"]:
         raise RuntimeError("Sprint 1 audit failed: " + json.dumps(audit))
 
-    tools_used = sorted(
+    final_tools = sorted(
         {
             str(source["run_retrieval"]["tool"])
             for source in exported["sources"]
@@ -306,13 +361,23 @@ def run_acceptance() -> dict[str, Any]:
         "status": "PASS",
         "question": QUESTION,
         "run_id": run_id,
+        "mcp_surface": [
+            "research_start_run",
+            "research_record_source",
+            "research_add_evidence",
+            "research_add_claim",
+            "research_complete_run",
+            "research_export_ledger",
+            "research_audit_run",
+        ],
         "discovery": {
             "tool": "Agent-Reach/Exa",
             "requested": 10,
             "parsed_distinct_urls": len(discovered_urls),
             "sample_urls": discovered_urls[:5],
         },
-        "retrieval_tools": tools_used,
+        "retrieval_attempts": retrieval_attempts,
+        "successful_retrieval_tools": final_tools,
         "source_ids": [source["source_id"] for source in source_records],
         "evidence_ids": [item["evidence_id"] for item in evidence_records],
         "claim_ids": [claim["claim_id"] for claim in claims],
