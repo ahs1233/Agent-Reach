@@ -72,6 +72,50 @@ def probe_media_acquisition(source_url: str, *, include_visual: bool = True) -> 
         return result
 
 
+def extract_media_evidence_bundle(source_url: str, *, frame_interval_seconds: int = 15) -> dict[str, Any]:
+    """Model-free evidence package for handoff to ChatGPT or another intelligence layer."""
+    with TemporaryDirectory(prefix="ahmed-media-evidence-") as tmp:
+        root = Path(tmp)
+        audio = download_audio(source_url, root)
+        duration = _probe_audio_duration(audio)
+        video = download_video_for_frames(source_url, root)
+        frames = _extract_keyframes(video, root, interval_seconds=frame_interval_seconds)
+        return {
+            "schema": "ahmed.media_evidence_bundle.v1",
+            "source_url": source_url,
+            "duration_seconds": duration,
+            "audio": {
+                "bytes": audio.stat().st_size,
+                "suffix": audio.suffix,
+                "sha256": hashlib.sha256(audio.read_bytes()).hexdigest(),
+            },
+            "video": {
+                "bytes": video.stat().st_size,
+                "suffix": video.suffix,
+                "sha256": hashlib.sha256(video.read_bytes()).hexdigest(),
+            },
+            "frames": [
+                {
+                    "index": frame["index"],
+                    "timestamp_seconds": frame["timestamp_seconds"],
+                    "citation": f"media:{frame['timestamp_seconds']:.1f}",
+                    "sha256": frame["sha256"],
+                }
+                for frame in frames
+            ],
+            "handoff": {
+                "target": "chatgpt",
+                "purpose": "deep_understanding",
+                "model_calls_used": 0,
+                "instructions": [
+                    "Preserve timestamps and citations.",
+                    "Separate extraction from interpretation.",
+                    "Use the attached media evidence for cross-modal deep understanding.",
+                ],
+            },
+        }
+
+
 def _extract_keyframes(src: Path, out_dir: Path, interval_seconds: int = 30) -> list[dict[str, Any]]:
     """Extract bounded frames robustly, including short/odd-timestamp social videos."""
     if interval_seconds < 5 or interval_seconds > 300:
