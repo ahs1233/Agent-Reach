@@ -10,8 +10,8 @@ status plus the measured age interval and policy inputs.
 from __future__ import annotations
 
 import calendar
-from datetime import date, datetime, time, timezone
 from typing import Any, NamedTuple
+from datetime import date, datetime, time, timezone
 
 FRESHNESS_STATUSES = {
     "FRESH",
