@@ -655,7 +655,13 @@ class AhmedToolboxGateway:
             if not url:
                 return self._text_result("url is required", is_error=True)
             try:
-                manifest = ingest_media(url, provider=str(arguments.get("provider") or "auto"), language=(str(arguments.get("language")).strip() if arguments.get("language") else None))
+                manifest = ingest_media(
+                    url,
+                    provider=str(arguments.get("provider") or "auto"),
+                    language=(str(arguments.get("language")).strip() if arguments.get("language") else None),
+                    analyze_visuals=bool(arguments.get("analyze_visuals", False)),
+                    vision_model=str(arguments.get("vision_model") or "gpt-5.6-luna"),
+                )
             except Exception as exc:  # noqa: BLE001
                 return self._text_result(f"Media ingestion failed: {exc}", is_error=True)
             return self._text_result(json.dumps(manifest, ensure_ascii=False))
