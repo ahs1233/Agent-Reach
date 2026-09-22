@@ -210,8 +210,24 @@ def run_acceptance() -> dict[str, Any]:
         },
     )
     discovered_urls = sorted(
-        set(re.findall(r"https?://[^\\s\\]\\[)>(\\\"']+", discovery_raw))
+        {
+            match.rstrip(".,;:")
+            for match in re.findall(
+                r"""https?://[^\s\]\[)>(\"'<>]+""",
+                discovery_raw,
+            )
+        }
     )
+    selected_source_hits = [
+        spec["url"]
+        for spec in SOURCES
+        if spec["url"].rstrip("/") in discovery_raw
+    ]
+    if len(discovered_urls) < 3:
+        raise RuntimeError(
+            "Exa discovery did not expose at least 3 parseable source URLs; "
+            f"found={len(discovered_urls)} preview={discovery_raw[:1500]!r}"
+        )
 
     run = _call_json(
         gateway,
@@ -224,6 +240,7 @@ def run_acceptance() -> dict[str, Any]:
                 "discovery_tool": "Agent-Reach/Exa",
                 "discovery_requested_results": 10,
                 "discovered_url_count": len(discovered_urls),
+                "selected_source_hits": len(selected_source_hits),
             },
         },
     )
@@ -395,7 +412,8 @@ def run_acceptance() -> dict[str, Any]:
             "tool": "Agent-Reach/Exa",
             "requested": 10,
             "parsed_distinct_urls": len(discovered_urls),
-            "sample_urls": discovered_urls[:5],
+            "selected_source_hits": selected_source_hits,
+            "sample_urls": discovered_urls[:10],
         },
         "retrieval_attempts": retrieval_attempts,
         "successful_retrieval_tools": final_tools,
