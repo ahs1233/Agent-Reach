@@ -1,6 +1,8 @@
 """Video/audio evidence ingestion for Ahmed Research Engine."""
 from __future__ import annotations
 import hashlib
+import base64
+import requests
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -94,6 +96,87 @@ def extract_claim_candidates(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     return claims
 
 
+
+def analyze_visual_frames(frames: list[dict[str, Any]], *, config: Config | None = None,
+                          model: str = "gpt-5.6-luna", max_frames: int = 24) -> list[dict[str, Any]]:
+    """Analyze sampled keyframes with a multimodal model and return grounded visual evidence."""
+    cfg = config or Config()
+    key = cfg.get("openai_api_key")
+    if not key:
+        raise NoProviderConfigured("openai: missing openai_api_key for visual analysis")
+    selected = frames[:max_frames]
+    events = []
+    for frame in selected:
+        path = Path(str(frame.get("path") or ""))
+        if not path.is_file():
+            continue
+        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+        prompt = (
+            "Analyze this single video keyframe as evidence. Return ONLY JSON with keys: "
+            "scene_description, visible_text, chart_or_table, people_or_speakers, "
+            "notable_visual_claims. Do not infer facts not visibly supported."
+        )
+        payload = {
+            "model": model,
+            "input": [{"role": "user", "content": [
+                {"type": "input_text", "text": prompt},
+                {"type": "input_image", "image_url": "data:image/jpeg;base64," + encoded},
+            ]}],
+            "text": {"format": {"type": "json_object"}},
+        }
+        response = requests.post(
+            "https://api.openai.com/v1/responses",
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            json=payload, timeout=90,
+        )
+        if response.status_code >= 400:
+            raise TranscribeError(f"vision request failed: HTTP {response.status_code}")
+        data = response.json()
+        output_text = ""
+        for item in data.get("output") or []:
+            for part in item.get("content") or []:
+                if part.get("type") == "output_text":
+                    output_text += str(part.get("text") or "")
+        try:
+            analysis = json.loads(output_text)
+        except json.JSONDecodeError:
+            analysis = {"scene_description": output_text, "visible_text": "", "parse_warning": True}
+        events.append({
+            "kind": "visual",
+            "timestamp_seconds": frame.get("timestamp_seconds"),
+            "frame_sha256": frame.get("sha256"),
+            "analysis": analysis,
+            "text": str(analysis.get("visible_text") or analysis.get("scene_description") or ""),
+            "citation": f"frame:{float(frame.get('timestamp_seconds') or 0):.1f}",
+            "model": model,
+        })
+    return events
+
+
+def visual_evidence_candidates(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert model-grounded frame observations into auditable evidence candidates."""
+    candidates = []
+    for event in events:
+        analysis = event.get("analysis") or {}
+        visible = str(analysis.get("visible_text") or "").strip()
+        description = str(analysis.get("scene_description") or "").strip()
+        claims = analysis.get("notable_visual_claims") or []
+        passage = visible or description
+        if not passage and not claims:
+            continue
+        candidates.append({
+            "citation": event.get("citation"),
+            "timestamp_seconds": event.get("timestamp_seconds"),
+            "frame_sha256": event.get("frame_sha256"),
+            "supporting_passage": passage,
+            "visible_text": visible,
+            "scene_description": description,
+            "notable_visual_claims": claims,
+            "status": "VISUAL_OBSERVATION_UNVERIFIED",
+            "requires_external_verification": bool(claims),
+        })
+    return candidates
+
 def register_media_evidence(store: Any, run_id: str, manifest: dict[str, Any]) -> dict[str, Any]:
     """Persist a media manifest and its timestamped statements into the Evidence Ledger."""
     source_url = str(manifest.get("source_url") or "").strip()
@@ -157,7 +240,8 @@ def verification_queries(manifest: dict[str, Any], max_queries: int = 20) -> lis
     return work
 
 def ingest_media(source_url: str, *, provider: str = "auto",
-                 language: str | None = None, config: Config | None = None) -> dict[str, Any]:
+                 language: str | None = None, config: Config | None = None,
+                 analyze_visuals: bool = False, vision_model: str = "gpt-5.6-luna") -> dict[str, Any]:
     """Return a bounded timestamped transcript manifest for a public media URL."""
     cfg = config or Config()
     selected = _select_provider(provider, cfg)
@@ -166,6 +250,7 @@ def ingest_media(source_url: str, *, provider: str = "auto",
         downloaded = download_audio(source_url, root)
         duration = _require_duration_within_budget(downloaded)
         frames = _extract_keyframes(downloaded, root)
+        visual_events = analyze_visual_frames(frames, config=cfg, model=vision_model) if analyze_visuals else []
         compressed = compress_audio(downloaded, root)
         chunks = chunk_audio(compressed, root, CHUNK_SECONDS)
         segments = []
@@ -183,17 +268,19 @@ def ingest_media(source_url: str, *, provider: str = "auto",
         "language_hint": language,
         "segments": [{**asdict(s), "citation": s.citation} for s in segments],
         "visual_frames": [{k: v for k, v in frame.items() if k != "path"} for frame in frames],
+        "visual_events": visual_events,
+        "visual_evidence_candidates": visual_evidence_candidates(visual_events),
         "full_transcript": "\n\n".join(f"[{s.citation}] {s.transcript}" for s in segments if s.transcript),
         "provenance": {
             "retrieval_tool": "yt-dlp", "audio_processing": "ffmpeg",
             "transcription_provider": selected, "timestamp_basis": "bounded audio chunks",
         },
-        "timeline": build_unified_timeline([{**asdict(s), "citation": s.citation} for s in segments]),
+        "timeline": build_unified_timeline([{**asdict(s), "citation": s.citation} for s in segments], visual_events),
         "claim_candidates": extract_claim_candidates({"source_url": source_url, "segments": [{**asdict(s), "citation": s.citation} for s in segments]}),
         "limitations": [
             "timestamps are chunk-level, not word-level",
             "speaker diarization is not performed",
-            "keyframes are extracted, but semantic vision/OCR requires a configured downstream vision model",
+            "visual analysis is optional and requires a configured OpenAI multimodal model",
             "transcript statements are source evidence, not independently verified facts",
         ],
     }
