@@ -1,4 +1,4 @@
-"""MCP surface for Sprint 1 evidence foundation."""
+"""MCP surface for Ahmed Research Engine evidence and output integrity."""
 
 from __future__ import annotations
 
@@ -156,6 +156,14 @@ def research_tool_specs() -> list[dict[str, Any]]:
                     "run_id": {"type": "string"},
                     "statement": {"type": "string", "minLength": 1},
                     "classification": {"type": "string", "enum": classification_enum},
+                    "observation_type": {
+                        "type": "string",
+                        "enum": observation_enum,
+                        "description": (
+                            "Semantic status of the claim itself. If omitted, the store "
+                            "derives it only when all supporting evidence agrees."
+                        ),
+                    },
                     "supporting_evidence_ids": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -175,6 +183,81 @@ def research_tool_specs() -> list[dict[str, Any]]:
                     "verification_count": {"type": "integer", "minimum": 0},
                     "provenance": {"type": "object"},
                 },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "research_create_output",
+            "description": (
+                "Create a generic evidence-backed consumer output. This is not report-"
+                "specific: use it for answers, alerts, dashboard state, APIs, agents, "
+                "automations, QA outputs, or other consumers. Every fragment must link "
+                "to Claim IDs and preserve claim observation semantics."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "required": [
+                    "run_id",
+                    "consumer_type",
+                    "output_type",
+                    "fragments",
+                ],
+                "properties": {
+                    "run_id": {"type": "string"},
+                    "consumer_type": {"type": "string", "minLength": 1},
+                    "consumer_id": {"type": "string"},
+                    "output_type": {"type": "string", "minLength": 1},
+                    "payload": {"type": "object"},
+                    "metadata": {"type": "object"},
+                    "fragments": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "required": ["claim_ids"],
+                            "properties": {
+                                "content": {"type": "string"},
+                                "payload": {"type": "object"},
+                                "claim_ids": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "minItems": 1,
+                                },
+                                "asserted_observation_type": {
+                                    "type": "string",
+                                    "enum": observation_enum + ["MIXED"],
+                                },
+                            },
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "research_get_output",
+            "description": (
+                "Resolve an output back through OutputFragment -> Claim -> Evidence -> "
+                "Source machine-readable provenance."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "required": ["output_id"],
+                "properties": {"output_id": {"type": "string"}},
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "research_audit_output",
+            "description": (
+                "Audit one consumer output for claim linkage, semantic integrity, "
+                "evidence resolution, and source resolution."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "required": ["output_id"],
+                "properties": {"output_id": {"type": "string"}},
                 "additionalProperties": False,
             },
         },
@@ -270,6 +353,7 @@ def handle_research_tool(
             str(arguments.get("run_id") or ""),
             statement=str(arguments.get("statement") or ""),
             classification=str(arguments.get("classification") or ""),
+            observation_type=arguments.get("observation_type"),
             supporting_evidence_ids=list(arguments.get("supporting_evidence_ids") or []),
             contradicting_evidence_ids=list(
                 arguments.get("contradicting_evidence_ids") or []
@@ -280,6 +364,23 @@ def handle_research_tool(
             verification_count=int(arguments.get("verification_count") or 0),
             provenance=arguments.get("provenance") or {},
         )
+
+    if name == "research_create_output":
+        return store.create_output(
+            str(arguments.get("run_id") or ""),
+            consumer_type=str(arguments.get("consumer_type") or ""),
+            consumer_id=arguments.get("consumer_id"),
+            output_type=str(arguments.get("output_type") or ""),
+            payload=arguments.get("payload") or {},
+            metadata=arguments.get("metadata") or {},
+            fragments=list(arguments.get("fragments") or []),
+        )
+
+    if name == "research_get_output":
+        return store.get_output(str(arguments.get("output_id") or ""))
+
+    if name == "research_audit_output":
+        return store.audit_output(str(arguments.get("output_id") or ""))
 
     if name == "research_export_ledger":
         return store.export_run(str(arguments.get("run_id") or ""))

@@ -1,7 +1,7 @@
-"""Evidence foundation for Ahmed Research Engine.
+"""Core evidence and output-integrity store for Ahmed Research Engine.
 
-Sprint 1 intentionally implements provenance + evidence ledger only.
-It does not compute freshness, source-quality, conflict, or causal scores.
+The core remains domain-agnostic and output-agnostic. It does not compute
+freshness, source-quality, conflict, causal, or PanWatch state scores here.
 """
 
 from __future__ import annotations
@@ -25,6 +25,20 @@ OBSERVATION_TYPES = {
     "COMPANY_GUIDANCE",
     "MODEL_OUTPUT",
     "UNKNOWN",
+}
+
+OUTPUT_SEMANTIC_TYPES = OBSERVATION_TYPES | {"MIXED"}
+
+SEMANTIC_LABELS = {
+    "ACTUAL": "Actual",
+    "ESTIMATE": "Estimate",
+    "FORECAST": "Forecast",
+    "TARGET": "Target",
+    "SCENARIO": "Scenario",
+    "COMPANY_GUIDANCE": "Company guidance",
+    "MODEL_OUTPUT": "Model output",
+    "UNKNOWN": "Unclassified",
+    "MIXED": "Mixed semantics",
 }
 
 CLAIM_CLASSIFICATIONS = {
@@ -230,6 +244,7 @@ class ResearchStore:
             run_id TEXT NOT NULL,
             statement TEXT NOT NULL,
             classification TEXT NOT NULL,
+            observation_type TEXT NOT NULL DEFAULT 'UNKNOWN',
             confidence TEXT NOT NULL DEFAULT 'UNASSESSED',
             confidence_score REAL,
             freshness_score REAL,
@@ -248,9 +263,97 @@ class ResearchStore:
             FOREIGN KEY(claim_id) REFERENCES claims(claim_id) ON DELETE CASCADE,
             FOREIGN KEY(evidence_id) REFERENCES evidence_items(evidence_id)
         );
+
+        CREATE TABLE IF NOT EXISTS outputs (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            output_id TEXT UNIQUE,
+            run_id TEXT NOT NULL,
+            consumer_type TEXT NOT NULL,
+            consumer_id TEXT,
+            output_type TEXT NOT NULL,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES research_runs(run_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_outputs_run
+        ON outputs(run_id, seq);
+
+        CREATE TABLE IF NOT EXISTS output_fragments (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            fragment_id TEXT UNIQUE,
+            output_id TEXT NOT NULL,
+            content TEXT,
+            rendered_content TEXT,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            asserted_observation_type TEXT NOT NULL,
+            position INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(output_id) REFERENCES outputs(output_id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS output_fragment_claims (
+            fragment_id TEXT NOT NULL,
+            claim_id TEXT NOT NULL,
+            position INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(fragment_id, claim_id),
+            FOREIGN KEY(fragment_id) REFERENCES output_fragments(fragment_id) ON DELETE CASCADE,
+            FOREIGN KEY(claim_id) REFERENCES claims(claim_id)
+        );
         """
         with self._lock, self._conn:
             self._conn.executescript(schema)
+            observation_type_added = self._ensure_column(
+                "claims",
+                "observation_type",
+                "TEXT NOT NULL DEFAULT 'UNKNOWN'",
+            )
+            if observation_type_added:
+                self._backfill_claim_observation_types()
+
+    def _ensure_column(self, table: str, column: str, ddl: str) -> bool:
+        columns = {
+            str(row["name"])
+            for row in self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column in columns:
+            return False
+        self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        return True
+
+    def _backfill_claim_observation_types(self) -> None:
+        """Backfill Sprint 1 claims when supporting evidence has one clear type."""
+        claims = self._conn.execute(
+            """
+            SELECT claim_id FROM claims
+            WHERE observation_type = 'UNKNOWN'
+            """
+        ).fetchall()
+        for row in claims:
+            claim_id = str(row["claim_id"] or "")
+            if not claim_id:
+                continue
+            evidence_types = {
+                str(item["observation_type"])
+                for item in self._conn.execute(
+                    """
+                    SELECT e.observation_type
+                    FROM claim_evidence ce
+                    JOIN evidence_items e ON e.evidence_id = ce.evidence_id
+                    WHERE ce.claim_id = ? AND ce.relation = 'SUPPORTS'
+                    """,
+                    (claim_id,),
+                ).fetchall()
+            }
+            if len(evidence_types) == 1:
+                self._conn.execute(
+                    """
+                    UPDATE claims SET observation_type = ?
+                    WHERE claim_id = ? AND observation_type = 'UNKNOWN'
+                    """,
+                    (next(iter(evidence_types)), claim_id),
+                )
 
     @staticmethod
     def _public_id(prefix: str, seq: int) -> str:
@@ -535,6 +638,8 @@ class ResearchStore:
                 "retrieval_method": row["retrieval_method"],
                 "retrieval_status": row["retrieval_status"],
                 "content_hash": row["content_hash"],
+                "representation_hash": row["content_hash"],
+                "content_hash_scope": "retrieved_representation",
                 "version_number": row["version_number"],
                 "previous_source_id": row["previous_source_id"],
                 "source_family_id": row["source_family_id"],
@@ -666,6 +771,7 @@ class ResearchStore:
         classification: str,
         supporting_evidence_ids: list[str] | None = None,
         contradicting_evidence_ids: list[str] | None = None,
+        observation_type: str | None = None,
         confidence: str = "UNASSESSED",
         confidence_score: float | None = None,
         freshness_score: float | None = None,
@@ -689,12 +795,16 @@ class ResearchStore:
             placeholders = ",".join("?" for _ in all_evidence)
             rows = self._conn.execute(
                 f"""
-                SELECT evidence_id, run_id FROM evidence_items
+                SELECT evidence_id, run_id, observation_type FROM evidence_items
                 WHERE evidence_id IN ({placeholders})
                 """,
                 tuple(all_evidence),
             ).fetchall()
             found = {str(row["evidence_id"]): str(row["run_id"]) for row in rows}
+            evidence_types = {
+                str(row["evidence_id"]): str(row["observation_type"])
+                for row in rows
+            }
             missing = [item for item in all_evidence if item not in found]
             if missing:
                 raise ValueError(f"unknown evidence IDs: {', '.join(missing)}")
@@ -705,19 +815,45 @@ class ResearchStore:
                     + ", ".join(wrong_run)
                 )
 
+            supporting_types = {evidence_types[item] for item in supporting}
+            if observation_type is None:
+                claim_observation_type = (
+                    next(iter(supporting_types))
+                    if len(supporting_types) == 1
+                    else "UNKNOWN"
+                )
+            else:
+                claim_observation_type = _normalize_enum(
+                    observation_type,
+                    OBSERVATION_TYPES,
+                    "claim observation_type",
+                )
+
+            if (
+                claim_type == "VERIFIED"
+                and len(supporting_types) == 1
+                and claim_observation_type != next(iter(supporting_types))
+            ):
+                raise ValueError(
+                    "verified claim semantic mismatch: supporting evidence is "
+                    f"{next(iter(supporting_types))} but claim asserted "
+                    f"{claim_observation_type}"
+                )
+
             cursor = self._conn.execute(
                 """
                 INSERT INTO claims(
-                    claim_id, run_id, statement, classification, confidence,
-                    confidence_score, freshness_score, verification_count,
+                    claim_id, run_id, statement, classification, observation_type,
+                    confidence, confidence_score, freshness_score, verification_count,
                     provenance_json, created_at
                 )
-                VALUES(NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES(NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
                     text,
                     claim_type,
+                    claim_observation_type,
                     confidence_label,
                     confidence_score,
                     freshness_score,
@@ -770,6 +906,7 @@ class ResearchStore:
                 "run_id": row["run_id"],
                 "statement": row["statement"],
                 "classification": row["classification"],
+                "observation_type": row["observation_type"],
                 "supporting_evidence_ids": [
                     item["evidence_id"] for item in relations if item["relation"] == "SUPPORTS"
                 ],
@@ -785,6 +922,335 @@ class ResearchStore:
                 "provenance": _json_loads(row["provenance_json"], {}),
                 "created_at": row["created_at"],
             }
+
+    def create_output(
+        self,
+        run_id: str,
+        *,
+        consumer_type: str,
+        output_type: str,
+        fragments: list[dict[str, Any]],
+        consumer_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create a generic evidence-backed output.
+
+        The core does not assume a report. Consumers may be answers, alerts,
+        dashboards, APIs, automations, agents, QA systems, or future PanWatch
+        state-update adapters.
+        """
+        self._require_run(run_id)
+        consumer = str(consumer_type or "").strip()
+        out_type = str(output_type or "").strip()
+        if not consumer:
+            raise ValueError("consumer_type is required")
+        if not out_type:
+            raise ValueError("output_type is required")
+        if not fragments:
+            raise ValueError("an output must contain at least one fragment")
+
+        now = utc_now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO outputs(
+                    output_id, run_id, consumer_type, consumer_id, output_type,
+                    payload_json, metadata_json, created_at
+                )
+                VALUES(NULL, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    consumer,
+                    str(consumer_id).strip() if consumer_id else None,
+                    out_type,
+                    _json_dumps(payload or {}),
+                    _json_dumps(metadata or {}),
+                    now,
+                ),
+            )
+            output_id = self._public_id("O", int(cursor.lastrowid))
+            self._conn.execute(
+                "UPDATE outputs SET output_id = ? WHERE seq = ?",
+                (output_id, cursor.lastrowid),
+            )
+
+            for position, fragment in enumerate(fragments):
+                claim_ids = list(
+                    dict.fromkeys(str(item).strip() for item in fragment.get("claim_ids", []))
+                )
+                claim_ids = [item for item in claim_ids if item]
+                if not claim_ids:
+                    raise ValueError("every output fragment must reference at least one claim_id")
+
+                placeholders = ",".join("?" for _ in claim_ids)
+                claim_rows = self._conn.execute(
+                    f"""
+                    SELECT claim_id, run_id, observation_type
+                    FROM claims
+                    WHERE claim_id IN ({placeholders})
+                    """,
+                    tuple(claim_ids),
+                ).fetchall()
+                found = {str(row["claim_id"]): row for row in claim_rows}
+                missing = [claim_id for claim_id in claim_ids if claim_id not in found]
+                if missing:
+                    raise ValueError(f"unknown claim IDs: {', '.join(missing)}")
+                wrong_run = [
+                    claim_id
+                    for claim_id, row in found.items()
+                    if str(row["run_id"]) != run_id
+                ]
+                if wrong_run:
+                    raise ValueError(
+                        "output claims must belong to the same research run: "
+                        + ", ".join(wrong_run)
+                    )
+
+                claim_types = {
+                    str(found[claim_id]["observation_type"])
+                    for claim_id in claim_ids
+                }
+                expected_type = (
+                    next(iter(claim_types))
+                    if len(claim_types) == 1
+                    else "MIXED"
+                )
+
+                asserted_raw = fragment.get("asserted_observation_type")
+                if asserted_raw is None:
+                    asserted_type = expected_type
+                else:
+                    asserted_type = _normalize_enum(
+                        str(asserted_raw),
+                        OUTPUT_SEMANTIC_TYPES,
+                        "output asserted_observation_type",
+                    )
+
+                if asserted_type != expected_type:
+                    raise ValueError(
+                        "semantic promotion/mismatch: linked claim semantics are "
+                        f"{sorted(claim_types)} but output asserted {asserted_type}"
+                    )
+
+                content_value = fragment.get("content")
+                content = (
+                    str(content_value).strip()
+                    if content_value is not None and str(content_value).strip()
+                    else None
+                )
+                fragment_payload = fragment.get("payload")
+                has_payload = fragment_payload not in (None, {}, [])
+                if content is None and not has_payload:
+                    raise ValueError(
+                        "output fragment requires content or a non-empty payload"
+                    )
+
+                rendered_content = None
+                if content is not None:
+                    rendered_content = (
+                        f"{SEMANTIC_LABELS[asserted_type]}: {content}"
+                    )
+
+                fragment_cursor = self._conn.execute(
+                    """
+                    INSERT INTO output_fragments(
+                        fragment_id, output_id, content, rendered_content,
+                        payload_json, asserted_observation_type, position, created_at
+                    )
+                    VALUES(NULL, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        output_id,
+                        content,
+                        rendered_content,
+                        _json_dumps(fragment_payload or {}),
+                        asserted_type,
+                        position,
+                        now,
+                    ),
+                )
+                fragment_id = self._public_id("F", int(fragment_cursor.lastrowid))
+                self._conn.execute(
+                    "UPDATE output_fragments SET fragment_id = ? WHERE seq = ?",
+                    (fragment_id, fragment_cursor.lastrowid),
+                )
+
+                for claim_position, claim_id in enumerate(claim_ids):
+                    self._conn.execute(
+                        """
+                        INSERT INTO output_fragment_claims(
+                            fragment_id, claim_id, position
+                        )
+                        VALUES(?, ?, ?)
+                        """,
+                        (fragment_id, claim_id, claim_position),
+                    )
+
+        return self.get_output(output_id)
+
+    def get_output(self, output_id: str) -> dict[str, Any]:
+        with self._lock:
+            output_row = self._conn.execute(
+                "SELECT * FROM outputs WHERE output_id = ?",
+                (output_id,),
+            ).fetchone()
+            if output_row is None:
+                raise ValueError(f"unknown output: {output_id}")
+
+            fragment_rows = self._conn.execute(
+                """
+                SELECT * FROM output_fragments
+                WHERE output_id = ?
+                ORDER BY position, seq
+                """,
+                (output_id,),
+            ).fetchall()
+
+        fragments: list[dict[str, Any]] = []
+        for fragment_row in fragment_rows:
+            with self._lock:
+                claim_rows = self._conn.execute(
+                    """
+                    SELECT claim_id FROM output_fragment_claims
+                    WHERE fragment_id = ?
+                    ORDER BY position
+                    """,
+                    (fragment_row["fragment_id"],),
+                ).fetchall()
+
+            provenance_refs: list[dict[str, Any]] = []
+            for claim_link in claim_rows:
+                claim = self.get_claim(str(claim_link["claim_id"]))
+                evidence_refs: list[dict[str, Any]] = []
+                for relation, evidence_ids in (
+                    ("SUPPORTS", claim["supporting_evidence_ids"]),
+                    ("CONTRADICTS", claim["contradicting_evidence_ids"]),
+                ):
+                    for evidence_id in evidence_ids:
+                        evidence = self.get_evidence(evidence_id)
+                        source = self.get_source(
+                            evidence["source_id"],
+                            run_id=str(output_row["run_id"]),
+                        )
+                        evidence_refs.append(
+                            {
+                                "relation": relation,
+                                "evidence_id": evidence["evidence_id"],
+                                "supporting_passage": evidence["supporting_passage"],
+                                "structured_fact": evidence["structured_fact"],
+                                "metric": evidence["metric"],
+                                "value": evidence["value"],
+                                "unit": evidence["unit"],
+                                "geography": evidence["geography"],
+                                "reference_period": evidence["reference_period"],
+                                "observation_type": evidence["observation_type"],
+                                "forecast_horizon": evidence["forecast_horizon"],
+                                "source_id": source["source_id"],
+                                "source_url": source["canonical_url"],
+                                "publisher": source["publisher"],
+                                "publication_date": source["publication_date"],
+                                "data_cutoff": source["data_cutoff"],
+                                "representation_hash": source["representation_hash"],
+                                "content_hash_scope": source["content_hash_scope"],
+                                "retrieved_at": (
+                                    source["run_retrieval"]["occurred_at"]
+                                    if source.get("run_retrieval")
+                                    else source["latest_retrieved_at"]
+                                ),
+                                "retrieval_tool": (
+                                    source["run_retrieval"]["tool"]
+                                    if source.get("run_retrieval")
+                                    else source["retrieval_tool"]
+                                ),
+                            }
+                        )
+
+                provenance_refs.append(
+                    {
+                        "claim_id": claim["claim_id"],
+                        "statement": claim["statement"],
+                        "classification": claim["classification"],
+                        "observation_type": claim["observation_type"],
+                        "evidence": evidence_refs,
+                    }
+                )
+
+            fragments.append(
+                {
+                    "fragment_id": fragment_row["fragment_id"],
+                    "content": fragment_row["content"],
+                    "rendered_content": fragment_row["rendered_content"],
+                    "payload": _json_loads(fragment_row["payload_json"], {}),
+                    "asserted_observation_type": fragment_row[
+                        "asserted_observation_type"
+                    ],
+                    "claim_ids": [
+                        str(item["claim_id"]) for item in claim_rows
+                    ],
+                    "provenance_refs": provenance_refs,
+                }
+            )
+
+        return {
+            "output_id": output_row["output_id"],
+            "run_id": output_row["run_id"],
+            "consumer_type": output_row["consumer_type"],
+            "consumer_id": output_row["consumer_id"],
+            "output_type": output_row["output_type"],
+            "payload": _json_loads(output_row["payload_json"], {}),
+            "metadata": _json_loads(output_row["metadata_json"], {}),
+            "created_at": output_row["created_at"],
+            "fragments": fragments,
+        }
+
+    def audit_output(self, output_id: str) -> dict[str, Any]:
+        output = self.get_output(output_id)
+        missing_claim_links = 0
+        semantic_mismatches = 0
+        unresolved_evidence = 0
+        unresolved_sources = 0
+
+        for fragment in output["fragments"]:
+            if not fragment["claim_ids"]:
+                missing_claim_links += 1
+
+            claim_types = {
+                ref["observation_type"] for ref in fragment["provenance_refs"]
+            }
+            expected_type = (
+                next(iter(claim_types)) if len(claim_types) == 1 else "MIXED"
+            )
+            if fragment["asserted_observation_type"] != expected_type:
+                semantic_mismatches += 1
+
+            for ref in fragment["provenance_refs"]:
+                if not ref["evidence"]:
+                    unresolved_evidence += 1
+                for evidence_ref in ref["evidence"]:
+                    if not evidence_ref.get("source_id"):
+                        unresolved_sources += 1
+
+        checks = {
+            "fragments_have_claims": missing_claim_links == 0,
+            "semantic_integrity": semantic_mismatches == 0,
+            "claims_resolve_to_evidence": unresolved_evidence == 0,
+            "evidence_resolves_to_sources": unresolved_sources == 0,
+        }
+        return {
+            "output_id": output_id,
+            "run_id": output["run_id"],
+            "passed": all(checks.values()),
+            "checks": checks,
+            "counts": {
+                "missing_claim_links": missing_claim_links,
+                "semantic_mismatches": semantic_mismatches,
+                "unresolved_evidence": unresolved_evidence,
+                "unresolved_sources": unresolved_sources,
+                "fragments": len(output["fragments"]),
+            },
+        }
 
     def export_run(self, run_id: str) -> dict[str, Any]:
         run = self.get_run(run_id)
@@ -819,12 +1285,23 @@ class ResearchStore:
                     (run_id,),
                 ).fetchall()
             ]
+            output_ids = [
+                str(row["output_id"])
+                for row in self._conn.execute(
+                    """
+                    SELECT output_id FROM outputs
+                    WHERE run_id = ? ORDER BY seq
+                    """,
+                    (run_id,),
+                ).fetchall()
+            ]
 
         return {
             "research_run": run,
             "sources": [self.get_source(item, run_id=run_id) for item in source_ids],
             "evidence": [self.get_evidence(item) for item in evidence_ids],
             "claims": [self.get_claim(item) for item in claim_ids],
+            "outputs": [self.get_output(item) for item in output_ids],
             "ledger": self.export_ledger_rows(run_id),
         }
 
@@ -835,6 +1312,7 @@ class ResearchStore:
             c.claim_id,
             c.statement,
             c.classification,
+            c.observation_type AS claim_observation_type,
             c.confidence,
             ce.relation,
             e.evidence_id,
@@ -890,6 +1368,7 @@ class ResearchStore:
                     "claim_id": row["claim_id"],
                     "claim": row["statement"],
                     "classification": row["classification"],
+                    "claim_observation_type": row["claim_observation_type"],
                     "confidence": row["confidence"],
                     "evidence_relation": row["relation"],
                     "evidence_id": row["evidence_id"],
@@ -917,6 +1396,8 @@ class ResearchStore:
                     "retrieval_method": row["run_retrieval_method"],
                     "retrieval_status": row["run_retrieval_status"],
                     "content_hash": row["content_hash"],
+                    "representation_hash": row["content_hash"],
+                    "content_hash_scope": "retrieved_representation",
                     "source_version": row["version_number"],
                     "previous_source_id": row["previous_source_id"],
                     "source_family_id": row["source_family_id"],
