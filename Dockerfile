@@ -20,7 +20,7 @@ COPY agent_reach ./agent_reach
 COPY config ./config
 
 RUN pip install --no-cache-dir . \
-    && pip install --no-cache-dir -U yt-dlp-getpot-wpc parth-dl \
+    && pip install --no-cache-dir -U yt-dlp-getpot-wpc parth-dl faster-whisper \
     && npm install -g mcporter@0.13.13
 
 RUN npm install --prefix /app youtubei.js@latest
