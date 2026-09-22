@@ -28,7 +28,7 @@ from agent_reach.channels.web import WebChannel
 
 from .research import ResearchStore
 from .research_mcp import handle_research_tool, research_tool_specs
-from .video import ingest_media
+from .video import ingest_media, register_media_evidence, verification_queries
 
 _MAX_REMOTE_RESPONSE_BYTES = 5 * 1024 * 1024
 _DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -401,6 +401,11 @@ class AhmedToolboxGateway:
                 "inputSchema": {"type": "object", "required": ["url"], "properties": {"url": {"type": "string"}, "provider": {"type": "string", "enum": ["auto", "groq", "openai"], "default": "auto"}, "language": {"type": "string"}}, "additionalProperties": False},
             },
             {
+                "name": "research_ingest_media_evidence",
+                "description": "Ingest media and automatically persist timestamped source statements into the Ahmed Evidence Ledger.",
+                "inputSchema": {"type": "object", "required": ["run_id", "url"], "properties": {"run_id": {"type": "string"}, "url": {"type": "string"}, "provider": {"type": "string", "enum": ["auto", "groq", "openai"], "default": "auto"}, "language": {"type": "string"}}, "additionalProperties": False},
+            },
+            {
                 "name": "reach_read_url",
                 "description": (
                     "Read a public HTTP(S) page through Agent Reach's Jina Reader "
@@ -566,6 +571,21 @@ class AhmedToolboxGateway:
                 f"direct_exa={fallback_error[:1200]!r}"
             )
             return self._text_result(diagnostic, is_error=True)
+
+        if name == "research_ingest_media_evidence":
+            if not self.research_enabled or self.research_store is None:
+                return self._text_result("Ahmed Research Engine is not enabled", is_error=True)
+            run_id = str(arguments.get("run_id") or "").strip()
+            url = str(arguments.get("url") or "").strip()
+            if not run_id or not url:
+                return self._text_result("run_id and url are required", is_error=True)
+            try:
+                manifest = ingest_media(url, provider=str(arguments.get("provider") or "auto"), language=(str(arguments.get("language")).strip() if arguments.get("language") else None))
+                ledger = register_media_evidence(self.research_store, run_id, manifest)
+                result = {"manifest": manifest, "ledger": ledger, "verification_work": verification_queries(manifest)}
+            except Exception as exc:  # noqa: BLE001
+                return self._text_result(f"Media evidence ingestion failed: {exc}", is_error=True)
+            return self._text_result(json.dumps(result, ensure_ascii=False, default=str))
 
         if name == "reach_media_ingest":
             url = str(arguments.get("url") or "").strip()
