@@ -5,10 +5,14 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import tempfile
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from .gateway import AhmedToolboxGateway, RemoteMCPError
+from agent_reach.transcribe import download_audio
 
 _MAX_REQUEST_BYTES = 1024 * 1024
 
@@ -54,7 +58,31 @@ class ToolboxRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
-        if self.path.rstrip("/") == "/health":
+        parsed = urlparse(self.path)
+        if parsed.path == "/media/audio":
+            if not self._authorized():
+                self._send_json(401, {"status": "unauthorized"})
+                return
+            source_url = (parse_qs(parsed.query).get("url") or [""])[0].strip()
+            if not source_url:
+                self._send_json(400, {"status": "error", "message": "url is required"})
+                return
+            try:
+                with tempfile.TemporaryDirectory(prefix="ahmed-audio-delivery-") as tmp:
+                    audio = download_audio(source_url, Path(tmp))
+                    data = audio.read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "audio/mp4")
+                    self.send_header("Content-Disposition", "attachment; filename=ahmed-media-audio.m4a")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(data)
+                return
+            except Exception as exc:  # noqa: BLE001
+                self._send_json(502, {"status": "error", "message": str(exc)})
+                return
+        if parsed.path.rstrip("/") == "/health":
             self._send_json(200, {"status": "ok", "service": "ahmed-toolbox"})
             return
         self._send_json(404, {"status": "not_found"})
