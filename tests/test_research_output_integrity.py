@@ -384,3 +384,26 @@ def test_export_run_includes_generic_outputs() -> None:
 
     exported = store.export_run(run["run_id"])
     assert exported["outputs"][0]["output_id"] == output["output_id"]
+
+
+
+def test_sprint1_claim_semantics_can_be_backfilled_from_supporting_evidence() -> None:
+    store = ResearchStore(":memory:")
+    run = store.create_run("Sprint 1 migration")
+    _, _, claim = _claim(
+        store,
+        run["run_id"],
+        slug="legacy-forecast",
+        observation_type="FORECAST",
+        statement="Legacy claim was a forecast.",
+    )
+
+    with store._lock, store._conn:
+        store._conn.execute(
+            "UPDATE claims SET observation_type = 'UNKNOWN' WHERE claim_id = ?",
+            (claim["claim_id"],),
+        )
+        store._backfill_claim_observation_types()
+
+    migrated = store.get_claim(claim["claim_id"])
+    assert migrated["observation_type"] == "FORECAST"
