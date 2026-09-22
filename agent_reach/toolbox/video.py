@@ -81,8 +81,9 @@ def _extract_keyframes(src: Path, out_dir: Path, interval_seconds: int = 30) -> 
     frame_dir = out_dir / "frames"
     frame_dir.mkdir(exist_ok=True)
     pattern = frame_dir / "frame_%05d.jpg"
-    cmd = ["ffmpeg", "-loglevel", "error", "-y", "-i", str(src), "-vf",
-           f"fps=1/{interval_seconds},scale='min(1280,iw)':-2", "-q:v", "3", str(pattern)]
+    cmd = ["ffmpeg", "-loglevel", "error", "-y", "-i", str(src), "-map", "0:v:0",
+           "-vf", f"fps=fps=1/{interval_seconds}:start_time=0,scale='min(1280,iw)':-2",
+           "-frames:v", "500", "-q:v", "3", str(pattern)]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if proc.returncode != 0:
         raise TranscribeError(f"frame extraction failed: {proc.stderr.strip()[:300]}")
