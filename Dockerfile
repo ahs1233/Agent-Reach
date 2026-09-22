@@ -20,7 +20,7 @@ COPY agent_reach ./agent_reach
 COPY config ./config
 
 RUN pip install --no-cache-dir . \
-    && npm install -g mcporter@0.13.13 youtubei.js@latest
+    && npm install -g mcporter@0.13.13\nRUN npm install --prefix /app youtubei.js@latest
 
 # Install the matching bgutil PO-token runtime in the same container so
 # yt-dlp can reach it over loopback without provisioning a Railway sidecar.
