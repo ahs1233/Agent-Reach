@@ -256,6 +256,8 @@ def download_audio(url: str, out_dir: Path) -> Path:
     _run(
         [
             "yt-dlp",
+            "--js-runtimes",
+            "node",
             "-x",
             "--audio-format",
             "m4a",
@@ -294,7 +296,7 @@ def download_video_for_frames(url: str, out_dir: Path) -> Path:
     _require("yt-dlp")
     template = out_dir / "visual_source.%(ext)s"
     cmd = [
-        "yt-dlp", "--no-playlist", "--max-filesize", str(MAX_SOURCE_BYTES),
+        "yt-dlp", "--js-runtimes", "node", "--no-playlist", "--max-filesize", str(MAX_SOURCE_BYTES),
         "--retries", "3", "--fragment-retries", "3",
         "-f", "bestvideo[height<=720]/best[height<=720]/bestvideo/best",
         "-o", str(template), "--", url,
@@ -306,7 +308,7 @@ def download_video_for_frames(url: str, out_dir: Path) -> Path:
         if host not in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}:
             raise
         fallback = [
-            "yt-dlp", "--no-playlist", "--max-filesize", str(MAX_SOURCE_BYTES),
+            "yt-dlp", "--js-runtimes", "node", "--no-playlist", "--max-filesize", str(MAX_SOURCE_BYTES),
             "--retries", "3", "--fragment-retries", "3",
             "--extractor-args",
             "youtube:player_client=mweb;youtubepot-bgutilhttp:base_url="
