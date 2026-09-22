@@ -5,7 +5,7 @@ import json
 import os
 
 from agent_reach.toolbox.video import probe_media_acquisition
-from agent_reach.transcribe import download_audio, transcribe_local
+from agent_reach.transcribe import download_audio, transcribe_local, build_transcript_evidence
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -28,7 +28,7 @@ def main() -> None:
         with TemporaryDirectory(prefix="ahmed-stt-") as tmp:
             audio = download_audio(url, Path(tmp))
             transcript = transcribe_local(audio)
-            print("AHMED_VIDEO_TRANSCRIPT=" + json.dumps(transcript, ensure_ascii=False, separators=(",", ":")), flush=True)
+            print("AHMED_VIDEO_TRANSCRIPT=" + json.dumps(transcript, ensure_ascii=False, separators=(",", ":")), flush=True)\n            evidence = build_transcript_evidence(transcript, source_url=url)\n            print("AHMED_VIDEO_SPEECH_EVIDENCE=" + json.dumps(evidence, ensure_ascii=False, separators=(",", ":")), flush=True)
             if not transcript.get("text"):
                 raise SystemExit("local transcription produced no text")
 
