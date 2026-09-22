@@ -90,6 +90,32 @@ def _require_size_at_most(path: Path, limit: int, label: str) -> int:
     return size
 
 
+def transcribe_local(path: Path, *, language: Optional[str] = None) -> dict:
+    """Free local speech-to-text using faster-whisper; returns timestamped text."""
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError as exc:
+        raise MissingDependency("faster-whisper is not installed") from exc
+    model_name = os.environ.get("AHMED_LOCAL_WHISPER_MODEL", "small").strip() or "small"
+    model = WhisperModel(model_name, device="cpu", compute_type="int8")
+    segments, info = model.transcribe(
+        str(path), language=(language or None), vad_filter=True, beam_size=5
+    )
+    rows = []
+    for seg in segments:
+        text = (seg.text or "").strip()
+        if text:
+            rows.append({"start_seconds": round(float(seg.start), 3), "end_seconds": round(float(seg.end), 3), "text": text})
+    return {
+        "provider": "local-faster-whisper",
+        "model": model_name,
+        "language": getattr(info, "language", language),
+        "language_probability": getattr(info, "language_probability", None),
+        "text": " ".join(row["text"] for row in rows).strip(),
+        "segments": rows,
+    }
+
+
 def _probe_audio_duration(path: Path) -> float:
     """Return duration in seconds or fail closed before media generation."""
     _require("ffprobe")
