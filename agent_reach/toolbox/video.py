@@ -5,6 +5,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
+import json
+import shutil
+import subprocess
 from agent_reach.config import Config
 from agent_reach.transcribe import (
     CHUNK_SECONDS, NoProviderConfigured, TranscribeError, _provider_key,
@@ -35,6 +38,61 @@ def _select_provider(provider: str, config: Config) -> str:
             return candidate
     raise NoProviderConfigured("no transcription provider configured")
 
+
+def _extract_keyframes(src: Path, out_dir: Path, interval_seconds: int = 30) -> list[dict[str, Any]]:
+    """Extract bounded keyframes for downstream vision/OCR models."""
+    if interval_seconds < 5 or interval_seconds > 300:
+        raise TranscribeError("frame interval must be between 5 and 300 seconds")
+    if not shutil.which("ffmpeg"):
+        raise TranscribeError("ffmpeg not found in PATH")
+    frame_dir = out_dir / "frames"
+    frame_dir.mkdir(exist_ok=True)
+    pattern = frame_dir / "frame_%05d.jpg"
+    cmd = ["ffmpeg", "-loglevel", "error", "-y", "-i", str(src), "-vf",
+           f"fps=1/{interval_seconds},scale='min(1280,iw)':-2", "-q:v", "3", str(pattern)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    if proc.returncode != 0:
+        raise TranscribeError(f"frame extraction failed: {proc.stderr.strip()[:300]}")
+    frames = sorted(frame_dir.glob("frame_*.jpg"))[:500]
+    return [{"index": i, "timestamp_seconds": float(i * interval_seconds),
+             "path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
+            for i, p in enumerate(frames)]
+
+
+def build_unified_timeline(segments: list[dict[str, Any]],
+                           visual_events: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Merge transcript and visual evidence without pretending either verifies the other."""
+    events = []
+    for seg in segments:
+        events.append({"kind": "speech", "timestamp_seconds": seg["start_seconds"],
+                       "end_seconds": seg["end_seconds"], "text": seg["transcript"],
+                       "citation": seg["citation"]})
+    for event in visual_events or []:
+        item = dict(event)
+        item["kind"] = item.get("kind") or "visual"
+        events.append(item)
+    return sorted(events, key=lambda x: float(x.get("timestamp_seconds", 0.0)))
+
+
+def extract_claim_candidates(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """Deterministic claim-candidate packaging; semantic classification remains model-side."""
+    claims = []
+    for seg in manifest.get("segments", []):
+        text = str(seg.get("transcript") or "").strip()
+        if not text:
+            continue
+        claims.append({
+            "candidate_id": f"MC-{int(seg['index']) + 1:04d}",
+            "statement_source_text": text,
+            "source_url": manifest.get("source_url"),
+            "citation": seg.get("citation"),
+            "start_seconds": seg.get("start_seconds"),
+            "end_seconds": seg.get("end_seconds"),
+            "status": "UNVERIFIED_SOURCE_STATEMENT",
+            "requires_external_verification": True,
+        })
+    return claims
+
 def ingest_media(source_url: str, *, provider: str = "auto",
                  language: str | None = None, config: Config | None = None) -> dict[str, Any]:
     """Return a bounded timestamped transcript manifest for a public media URL."""
@@ -44,6 +102,7 @@ def ingest_media(source_url: str, *, provider: str = "auto",
         root = Path(tmp)
         downloaded = download_audio(source_url, root)
         duration = _require_duration_within_budget(downloaded)
+        frames = _extract_keyframes(downloaded, root)
         compressed = compress_audio(downloaded, root)
         chunks = chunk_audio(compressed, root, CHUNK_SECONDS)
         segments = []
@@ -60,15 +119,18 @@ def ingest_media(source_url: str, *, provider: str = "auto",
         "provider": selected,
         "language_hint": language,
         "segments": [{**asdict(s), "citation": s.citation} for s in segments],
+        "visual_frames": [{k: v for k, v in frame.items() if k != "path"} for frame in frames],
         "full_transcript": "\n\n".join(f"[{s.citation}] {s.transcript}" for s in segments if s.transcript),
         "provenance": {
             "retrieval_tool": "yt-dlp", "audio_processing": "ffmpeg",
             "transcription_provider": selected, "timestamp_basis": "bounded audio chunks",
         },
+        "timeline": build_unified_timeline([{**asdict(s), "citation": s.citation} for s in segments]),
+        "claim_candidates": extract_claim_candidates({"source_url": source_url, "segments": [{**asdict(s), "citation": s.citation} for s in segments]}),
         "limitations": [
             "timestamps are chunk-level, not word-level",
             "speaker diarization is not performed",
-            "visual scene/OCR evidence is not yet extracted",
+            "keyframes are extracted, but semantic vision/OCR requires a configured downstream vision model",
             "transcript statements are source evidence, not independently verified facts",
         ],
     }
