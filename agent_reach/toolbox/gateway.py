@@ -26,9 +26,19 @@ import requests
 from agent_reach import AgentReach
 from agent_reach.channels.web import WebChannel
 
+from .research import ResearchStore
+from .research_mcp import handle_research_tool, research_tool_specs
+
 _MAX_REMOTE_RESPONSE_BYTES = 5 * 1024 * 1024
 _DEFAULT_TIMEOUT_SECONDS = 30.0
 _PREFIX_RE = re.compile(r"[^a-zA-Z0-9_-]+")
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on", "enabled"}
 
 _DEFAULT_REMOTE_ALLOWLISTS: dict[str, tuple[str, ...]] = {
     # Read-only one-shot tools. `make_request` is excluded because its schema
@@ -284,9 +294,21 @@ class AhmedToolboxGateway:
         remotes: dict[str, RemoteMCPClient] | None = None,
         *,
         agent_reach: AgentReach | None = None,
+        research_store: ResearchStore | None = None,
+        research_enabled: bool | None = None,
     ):
         self.agent_reach = agent_reach or AgentReach()
         self.remotes = remotes or {}
+        self.research_enabled = (
+            _env_flag("AHMED_RESEARCH_ENABLED", False)
+            if research_enabled is None
+            else bool(research_enabled)
+        )
+        self.research_store = (
+            research_store or ResearchStore.from_environment()
+            if self.research_enabled
+            else None
+        )
 
     @classmethod
     def from_environment(cls) -> "AhmedToolboxGateway":
@@ -397,6 +419,8 @@ class AhmedToolboxGateway:
 
     def list_tools(self) -> list[dict[str, Any]]:
         tools = list(self._local_tool_specs())
+        if self.research_enabled:
+            tools.extend(research_tool_specs())
         used_names = {tool["name"] for tool in tools}
 
         for prefix, remote in sorted(self.remotes.items()):
@@ -429,6 +453,24 @@ class AhmedToolboxGateway:
 
     def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         arguments = arguments or {}
+
+        if self.research_enabled and self.research_store is not None:
+            try:
+                research_result = handle_research_tool(
+                    self.research_store,
+                    name,
+                    arguments,
+                )
+            except (TypeError, ValueError) as exc:
+                return self._text_result(
+                    f"Research evidence error: {exc}",
+                    is_error=True,
+                )
+            if research_result is not None:
+                return self._text_result(
+                    json.dumps(research_result, ensure_ascii=False, default=str)
+                )
+
         if name == "reach_doctor":
             data = self.agent_reach.doctor()
             return self._text_result(json.dumps(data, ensure_ascii=False, default=str))
