@@ -175,6 +175,89 @@ TRANSCRIPT:
 
 
 
+
+def _image_fingerprint(path: Path, grid: int = 16) -> bytes:
+    """Dependency-free perceptual fingerprint using ffmpeg grayscale raw pixels."""
+    proc = subprocess.run([
+        "ffmpeg","-loglevel","error","-i",str(path),"-vf",f"scale={grid}:{grid},format=gray",
+        "-frames:v","1","-f","rawvideo","-"
+    ], capture_output=True, timeout=30)
+    if proc.returncode != 0 or len(proc.stdout) < grid * grid:
+        return b""
+    return proc.stdout[:grid * grid]
+
+
+def _fingerprint_distance(a: bytes, b: bytes) -> float:
+    if not a or not b or len(a) != len(b):
+        return 1.0
+    return sum(abs(x-y) for x,y in zip(a,b)) / (255.0 * len(a))
+
+
+def adaptive_sample_frames(frames: list[dict[str, Any]], *,
+                           change_threshold: float = 0.10,
+                           max_frames: int = 48) -> list[dict[str, Any]]:
+    """Keep visually meaningful changes and suppress near-duplicate frames."""
+    if not frames:
+        return []
+    selected: list[dict[str, Any]] = []
+    previous_fp = b""
+    for frame in frames:
+        path = Path(str(frame.get("path") or ""))
+        if not path.is_file():
+            continue
+        fp = _image_fingerprint(path)
+        distance = _fingerprint_distance(previous_fp, fp) if previous_fp else 1.0
+        if not selected or distance >= change_threshold:
+            item = dict(frame)
+            item["visual_change_score"] = round(distance, 4)
+            selected.append(item)
+            previous_fp = fp
+        if len(selected) >= max_frames:
+            break
+    if frames and selected:
+        last = frames[-1]
+        if selected[-1].get("sha256") != last.get("sha256") and len(selected) < max_frames:
+            item = dict(last)
+            item["visual_change_score"] = None
+            selected.append(item)
+    return selected
+
+
+def semantic_chunk_segments(segments: list[dict[str, Any]], *,
+                            max_chars: int = 7000,
+                            max_seconds: float = 240.0) -> list[dict[str, Any]]:
+    """Create bounded semantic-ready chunks while preserving timestamp provenance."""
+    chunks: list[dict[str, Any]] = []
+    current: list[dict[str, Any]] = []
+    chars = 0
+    for seg in segments:
+        text = str(seg.get("transcript") or "").strip()
+        if not text:
+            continue
+        start = float(seg.get("start_seconds") or 0.0)
+        prospective_end = float(seg.get("end_seconds") or start)
+        current_start = float(current[0].get("start_seconds") or 0.0) if current else start
+        exceeds = current and (chars + len(text) > max_chars or prospective_end - current_start > max_seconds)
+        if exceeds:
+            chunks.append(_finalize_semantic_chunk(current, len(chunks)))
+            current, chars = [], 0
+        current.append(seg)
+        chars += len(text)
+    if current:
+        chunks.append(_finalize_semantic_chunk(current, len(chunks)))
+    return chunks
+
+
+def _finalize_semantic_chunk(items: list[dict[str, Any]], index: int) -> dict[str, Any]:
+    start = float(items[0].get("start_seconds") or 0.0)
+    end = float(items[-1].get("end_seconds") or start)
+    return {
+        "chunk_id": f"SC-{index+1:04d}", "start_seconds": start, "end_seconds": end,
+        "citations": [x.get("citation") for x in items if x.get("citation")],
+        "text": "\n".join(str(x.get("transcript") or "").strip() for x in items),
+        "source_segment_count": len(items),
+    }
+
 def evaluate_video_intelligence(manifest: dict[str, Any], *,
                                 understanding: dict[str, Any] | None = None,
                                 longitudinal: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -506,7 +589,8 @@ def ingest_media(source_url: str, *, provider: str = "auto",
         root = Path(tmp)
         downloaded = download_audio(source_url, root)
         duration = _require_duration_within_budget(downloaded)
-        frames = _extract_keyframes(downloaded, root)
+        raw_frames = _extract_keyframes(downloaded, root, interval_seconds=10)
+        frames = adaptive_sample_frames(raw_frames)
         visual_events = analyze_visual_frames(frames, config=cfg, model=vision_model) if analyze_visuals else []
         compressed = compress_audio(downloaded, root)
         chunks = chunk_audio(compressed, root, CHUNK_SECONDS)
@@ -524,6 +608,8 @@ def ingest_media(source_url: str, *, provider: str = "auto",
         "provider": selected,
         "language_hint": language,
         "segments": [{**asdict(s), "citation": s.citation} for s in segments],
+        "semantic_chunks": semantic_chunk_segments([{**asdict(s), "citation": s.citation} for s in segments]),
+        "sampling": {"strategy": "adaptive_visual_change", "raw_frame_count": len(raw_frames), "selected_frame_count": len(frames)},
         "visual_frames": [{k: v for k, v in frame.items() if k != "path"} for frame in frames],
         "visual_events": visual_events,
         "visual_evidence_candidates": visual_evidence_candidates(visual_events),
