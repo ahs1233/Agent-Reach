@@ -176,6 +176,53 @@ TRANSCRIPT:
 
 
 
+
+def detect_topic_boundaries(segments: list[dict[str, Any]], *, config: Config | None = None,
+                            model: str = "gpt-5.6-luna") -> list[dict[str, Any]]:
+    if not segments:
+        return []
+    cfg = config or Config()
+    compact = [{"i": i, "start": s.get("start_seconds"), "end": s.get("end_seconds"),
+                "citation": s.get("citation"), "text": str(s.get("transcript") or "")[:1200]}
+               for i, s in enumerate(segments)]
+    prompt = ("Detect genuine topic boundaries. Return ONLY JSON with key chapters; each chapter has "
+              "title,start_index,end_index,reason. Use contiguous ranges; do not split for pauses/examples.\n" +
+              json.dumps(compact, ensure_ascii=False)[:120000])
+    result = _responses_json(prompt, config=cfg, model=model)
+    chapters = []
+    for n, item in enumerate(result.get("chapters") or []):
+        try:
+            a, b = int(item["start_index"]), int(item["end_index"])
+            if a < 0 or b < a or b >= len(segments): continue
+            chapters.append({"chapter_id": f"CH-{n+1:03d}", "title": str(item.get("title") or ""),
+                "start_seconds": segments[a]["start_seconds"], "end_seconds": segments[b]["end_seconds"],
+                "citations": [s["citation"] for s in segments[a:b+1]], "reason": str(item.get("reason") or "")})
+        except (KeyError, TypeError, ValueError): continue
+    return chapters
+
+def infer_speaker_turns(segments: list[dict[str, Any]], *, config: Config | None = None,
+                        model: str = "gpt-5.6-luna") -> list[dict[str, Any]]:
+    if not segments:
+        return []
+    cfg = config or Config()
+    compact = [{"i": i, "citation": s.get("citation"), "text": str(s.get("transcript") or "")[:1200]}
+               for i, s in enumerate(segments)]
+    prompt = ("Infer speaker turns only from textual evidence. Return ONLY JSON with key turns; each turn has "
+              "start_index,end_index,speaker_label,confidence,basis. Use SPEAKER_UNKNOWN if insufficient. "
+              "This is not acoustic voice identification.\n" + json.dumps(compact, ensure_ascii=False)[:120000])
+    result = _responses_json(prompt, config=cfg, model=model)
+    turns = []
+    for item in result.get("turns") or []:
+        try:
+            a, b = int(item["start_index"]), int(item["end_index"])
+            if a < 0 or b < a or b >= len(segments): continue
+            turns.append({"speaker_label": str(item.get("speaker_label") or "SPEAKER_UNKNOWN"),
+                "confidence": str(item.get("confidence") or "LOW"), "basis": str(item.get("basis") or ""),
+                "start_seconds": segments[a]["start_seconds"], "end_seconds": segments[b]["end_seconds"],
+                "citations": [s["citation"] for s in segments[a:b+1]], "method": "TEXTUAL_SPEAKER_TURN_INFERENCE"})
+        except (KeyError, TypeError, ValueError): continue
+    return turns
+
 def _image_fingerprint(path: Path, grid: int = 16) -> bytes:
     """Dependency-free perceptual fingerprint using ffmpeg grayscale raw pixels."""
     proc = subprocess.run([
