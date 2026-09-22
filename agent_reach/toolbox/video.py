@@ -41,6 +41,37 @@ def _select_provider(provider: str, config: Config) -> str:
     raise NoProviderConfigured("no transcription provider configured")
 
 
+def probe_media_acquisition(source_url: str, *, include_visual: bool = True) -> dict[str, Any]:
+    """Preflight direct media acquisition without spending transcription/vision API calls."""
+    with TemporaryDirectory(prefix="ahmed-media-probe-") as tmp:
+        root = Path(tmp)
+        audio = download_audio(source_url, root)
+        duration = _probe_audio_duration(audio)
+        result: dict[str, Any] = {
+            "status": "OK",
+            "source_url": source_url,
+            "audio": {
+                "acquired": True,
+                "bytes": audio.stat().st_size,
+                "duration_seconds": duration,
+                "suffix": audio.suffix,
+            },
+            "visual": {"requested": include_visual, "acquired": False},
+        }
+        if include_visual:
+            video = download_video_for_frames(source_url, root)
+            frames = _extract_keyframes(video, root, interval_seconds=60)
+            result["visual"] = {
+                "requested": True,
+                "acquired": True,
+                "bytes": video.stat().st_size,
+                "suffix": video.suffix,
+                "preview_frame_count": len(frames),
+                "preview_frame_sha256": [f["sha256"] for f in frames[:3]],
+            }
+        return result
+
+
 def _extract_keyframes(src: Path, out_dir: Path, interval_seconds: int = 30) -> list[dict[str, Any]]:
     """Extract bounded keyframes for downstream vision/OCR models."""
     if interval_seconds < 5 or interval_seconds > 300:
