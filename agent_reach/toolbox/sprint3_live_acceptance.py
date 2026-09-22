@@ -12,7 +12,9 @@ import sys
 from typing import Any
 
 from agent_reach.toolbox.gateway import AhmedToolboxGateway
-from agent_reach.toolbox.sprint2_live_acceptance import run_acceptance as run_sprint2
+from agent_reach.toolbox.sprint2_live_acceptance import (
+    run_acceptance as run_sprint2,
+)
 
 
 AS_OF = "2026-09-22T12:00:00Z"
