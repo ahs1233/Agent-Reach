@@ -25,7 +25,7 @@ done
 
 if [ "${AHMED_WPC_LIVE_ACCEPTANCE:-0}" = "1" ]; then
   echo "Running Chromium WebPoClient yt-dlp acceptance..." >&2
-  /opt/venv/bin/yt-dlp -v --skip-download --extractor-args "youtubepot-wpc:browser_path=/usr/bin/chromium" "https://www.youtube.com/watch?v=${AHMED_VIDEO_ID:-9Ignyhh1WqQ}"
+  /opt/venv/bin/yt-dlp -v --js-runtimes node --skip-download --extractor-args "youtubepot-wpc:browser_path=/usr/bin/chromium" "https://www.youtube.com/watch?v=${AHMED_VIDEO_ID:-9Ignyhh1WqQ}"
 fi
 
 if [ "${AHMED_YOUTUBEJS_LIVE_ACCEPTANCE:-0}" = "1" ]; then
