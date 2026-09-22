@@ -11,6 +11,7 @@ import json
 import time
 from collections.abc import Callable
 from typing import Any
+
 ToolCaller = Callable[[str, dict[str, Any]], dict[str, Any]]
 
 ANTI_BOT_MARKERS = (
