@@ -265,6 +265,19 @@ def _ytdlp_network_args() -> list[str]:
     return args
 
 
+def _is_youtube_url(url: str) -> bool:
+    host = (urlparse(url if "://" in url else "https://" + url).hostname or "").lower()
+    return host in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
+
+
+def _ytdlp_wpc_args() -> list[str]:
+    """Documented WebPoClient provider args for YouTube acquisition."""
+    browser = os.environ.get("YTDLP_WPC_BROWSER_PATH", "/usr/bin/chromium").strip()
+    if not browser or not Path(browser).exists():
+        return []
+    return ["--extractor-args", f"youtubepot-wpc:browser_path={browser}"]
+
+
 def download_audio(url: str, out_dir: Path) -> Path:
     """Download audio with yt-dlp into out_dir; return the resulting file path."""
     _assert_safe_public_url(url)
@@ -276,25 +289,25 @@ def download_audio(url: str, out_dir: Path) -> Path:
         "--no-playlist", "--max-filesize", str(MAX_SOURCE_BYTES),
         "-o", str(template),
     ]
-    try:
-        _run(common + ["--", url], timeout=1800)
-    except TranscribeError as first_error:
-        host = (urlparse(url if "://" in url else "https://" + url).hostname or "").lower()
-        if host not in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}:
-            raise
-        fallback = common + [
+    attempts: list[tuple[str, list[str]]] = [("default", common)]
+    if _is_youtube_url(url):
+        wpc = _ytdlp_wpc_args()
+        if wpc:
+            attempts.insert(0, ("wpc", common + wpc))
+        attempts.append(("bgutil-mweb", common + [
             "--extractor-args",
             "youtube:player_client=mweb;youtubepot-bgutilhttp:base_url="
             + os.environ.get("YTDLP_POT_PROVIDER_URL", "http://127.0.0.1:4416"),
-            "--", url,
-        ]
+        ]))
+    errors = []
+    for label, command in attempts:
         try:
-            _run(fallback, timeout=1800)
-        except TranscribeError as second_error:
-            raise TranscribeError(
-                "audio acquisition failed with default and mweb YouTube "
-                f"clients; default={first_error}; mweb={second_error}"
-            ) from second_error
+            _run(command + ["--", url], timeout=1800)
+            break
+        except TranscribeError as exc:
+            errors.append(f"{label}={exc}")
+    else:
+        raise TranscribeError("audio acquisition failed; " + "; ".join(errors))
     files = sorted(out_dir.glob("source.*"))
     if not files:
         limit_mib = MAX_SOURCE_BYTES // (1024 * 1024)
@@ -322,28 +335,25 @@ def download_video_for_frames(url: str, out_dir: Path) -> Path:
         "-f", "bestvideo[height<=720]/best[height<=720]/bestvideo/best",
         "-o", str(template), "--", url,
     ]
-    try:
-        _run(cmd, timeout=1800)
-    except TranscribeError as first_error:
-        host = (urlparse(url if "://" in url else "https://" + url).hostname or "").lower()
-        if host not in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}:
-            raise
-        fallback = [
-            "yt-dlp", "--js-runtimes", "node", "--no-playlist", "--max-filesize", str(MAX_SOURCE_BYTES),
-            "--retries", "3", "--fragment-retries", "3",
+    attempts: list[tuple[str, list[str]]] = [("default", cmd)]
+    if _is_youtube_url(url):
+        wpc = _ytdlp_wpc_args()
+        if wpc:
+            attempts.insert(0, ("wpc", cmd[:-2] + wpc + cmd[-2:]))
+        attempts.append(("bgutil-mweb", cmd[:-4] + [
             "--extractor-args",
             "youtube:player_client=mweb;youtubepot-bgutilhttp:base_url="
             + os.environ.get("YTDLP_POT_PROVIDER_URL", "http://127.0.0.1:4416"),
-            "-f", "bestvideo[height<=720]/best[height<=720]/bestvideo/best",
-            "-o", str(template), "--", url,
-        ]
+        ] + cmd[-4:]))
+    errors = []
+    for label, command in attempts:
         try:
-            _run(fallback, timeout=1800)
-        except TranscribeError as second_error:
-            raise TranscribeError(
-                "visual video acquisition failed with default and mweb YouTube "
-                f"clients; default={first_error}; mweb={second_error}"
-            ) from second_error
+            _run(command, timeout=1800)
+            break
+        except TranscribeError as exc:
+            errors.append(f"{label}={exc}")
+    else:
+        raise TranscribeError("visual video acquisition failed; " + "; ".join(errors))
     files = sorted(out_dir.glob("visual_source.*"))
     if not files:
         limit_mib = MAX_SOURCE_BYTES // (1024 * 1024)
