@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import os
 import platform
-import resource
 import sqlite3
 import statistics
 import sys
@@ -495,7 +494,6 @@ def run_benchmark() -> dict[str, Any]:
             "platform": platform.platform(),
             "sqlite": sqlite3.sqlite_version,
             "cpu_count": os.cpu_count(),
-            "max_rss_kb": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
             "db_size_bytes": db_size,
         },
         "core": core,
