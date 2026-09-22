@@ -118,28 +118,32 @@ def assess_source_independence(
     for source_id in support_ids:
         groups.setdefault(dsu.find(source_id), []).append(source_id)
 
-    ordered_groups = sorted(
-        (sorted(members) for members in groups.values()),
-        key=lambda members: members[0],
-    )
-    group_id_by_source: dict[str, str] = {}
+    ordered_roots = sorted(groups, key=lambda item: min(groups[item]))
+    root_to_lineage = {
+        root: f"L{index}"
+        for index, root in enumerate(ordered_roots, start=1)
+    }
     rendered_groups: list[dict[str, Any]] = []
-    for index, members in enumerate(ordered_groups, start=1):
-        group_id = f"L{index}"
-        for source_id in members:
-            group_id_by_source[source_id] = group_id
-        member_set = set(members)
+    for root in ordered_roots:
+        members = sorted(groups[root])
+        lineage_members = sorted(
+            source_id
+            for source_id in all_ids
+            if dsu.find(source_id) == root
+        )
+        lineage_member_set = set(lineage_members)
         reasons = sorted(
             {
                 item["reason"]
                 for item in grouping_reasons
-                if set(item["source_ids"]) <= member_set
+                if set(item["source_ids"]) <= lineage_member_set
             }
         )
         rendered_groups.append(
             {
-                "lineage_id": group_id,
+                "lineage_id": root_to_lineage[root],
                 "source_ids": members,
+                "lineage_member_source_ids": lineage_members,
                 "canonical_urls": sorted(
                     {
                         str(source_by_id[item].get("canonical_url") or "")
@@ -157,14 +161,6 @@ def assess_source_independence(
                 "grouping_reasons": reasons,
             }
         )
-
-    root_to_lineage = {
-        root: f"L{index}"
-        for index, root in enumerate(
-            sorted(groups, key=lambda item: min(groups[item])),
-            start=1,
-        )
-    }
     verified_pairs: set[tuple[str, str]] = set()
     for left, right in explicit_independence:
         left_root = dsu.find(left)
