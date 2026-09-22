@@ -304,20 +304,23 @@ class ResearchStore:
         """
         with self._lock, self._conn:
             self._conn.executescript(schema)
-            self._ensure_column(
+            observation_type_added = self._ensure_column(
                 "claims",
                 "observation_type",
                 "TEXT NOT NULL DEFAULT 'UNKNOWN'",
             )
-            self._backfill_claim_observation_types()
+            if observation_type_added:
+                self._backfill_claim_observation_types()
 
-    def _ensure_column(self, table: str, column: str, ddl: str) -> None:
+    def _ensure_column(self, table: str, column: str, ddl: str) -> bool:
         columns = {
             str(row["name"])
             for row in self._conn.execute(f"PRAGMA table_info({table})").fetchall()
         }
-        if column not in columns:
-            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        if column in columns:
+            return False
+        self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        return True
 
     def _backfill_claim_observation_types(self) -> None:
         """Backfill Sprint 1 claims when supporting evidence has one clear type."""
