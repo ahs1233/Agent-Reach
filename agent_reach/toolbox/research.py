@@ -504,6 +504,20 @@ class ResearchStore:
                 params = (source_id, run_id)
             events_query += " ORDER BY seq"
             events = self._conn.execute(events_query, params).fetchall()
+            run_retrieval = None
+            if run_id:
+                retrieval_rows = [
+                    item for item in events if str(item["stage"]).upper() == "RETRIEVAL"
+                ]
+                if retrieval_rows:
+                    item = retrieval_rows[-1]
+                    run_retrieval = {
+                        "tool": item["tool"],
+                        "method": item["method"],
+                        "status": item["status"],
+                        "occurred_at": item["occurred_at"],
+                        "detail": item["detail"],
+                    }
             return {
                 "source_id": row["source_id"],
                 "canonical_url": row["canonical_url"],
@@ -526,6 +540,7 @@ class ResearchStore:
                 "source_family_id": row["source_family_id"],
                 "freshness_score": row["freshness_score"],
                 "metadata": _json_loads(row["metadata_json"], {}),
+                "run_retrieval": run_retrieval,
                 "retrieval_history": [
                     {
                         "stage": item["stage"],
@@ -841,10 +856,10 @@ class ResearchStore:
             s.primary_source,
             s.publication_date,
             s.data_cutoff,
-            s.latest_retrieved_at,
-            s.retrieval_tool,
-            s.retrieval_method,
-            s.retrieval_status,
+            COALESCE(re.occurred_at, s.latest_retrieved_at) AS run_retrieved_at,
+            COALESCE(re.tool, s.retrieval_tool) AS run_retrieval_tool,
+            COALESCE(re.method, s.retrieval_method) AS run_retrieval_method,
+            COALESCE(re.status, s.retrieval_status) AS run_retrieval_status,
             s.content_hash,
             s.version_number,
             s.previous_source_id,
@@ -853,6 +868,14 @@ class ResearchStore:
         JOIN claim_evidence ce ON ce.claim_id = c.claim_id
         JOIN evidence_items e ON e.evidence_id = ce.evidence_id
         JOIN sources s ON s.source_id = e.source_id
+        LEFT JOIN retrieval_events re
+          ON re.seq = (
+              SELECT MAX(re2.seq)
+              FROM retrieval_events re2
+              WHERE re2.run_id = c.run_id
+                AND re2.source_id = s.source_id
+                AND UPPER(re2.stage) = 'RETRIEVAL'
+          )
         WHERE c.run_id = ?
         ORDER BY c.seq, ce.relation, ce.position
         """
@@ -889,10 +912,10 @@ class ResearchStore:
                     ),
                     "publication_date": row["publication_date"],
                     "data_cutoff": row["data_cutoff"],
-                    "retrieved_at": row["latest_retrieved_at"],
-                    "retrieval_tool": row["retrieval_tool"],
-                    "retrieval_method": row["retrieval_method"],
-                    "retrieval_status": row["retrieval_status"],
+                    "retrieved_at": row["run_retrieved_at"],
+                    "retrieval_tool": row["run_retrieval_tool"],
+                    "retrieval_method": row["run_retrieval_method"],
+                    "retrieval_status": row["run_retrieval_status"],
                     "content_hash": row["content_hash"],
                     "source_version": row["version_number"],
                     "previous_source_id": row["previous_source_id"],
