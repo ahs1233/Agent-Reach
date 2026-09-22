@@ -210,3 +210,95 @@ def test_latest_release_overlap_with_coarse_date_is_uncertain() -> None:
     )
     assert result["status"] == "UNCERTAIN"
     assert result["reason_code"] == "DATE_PRECISION_OVERLAPS_LATEST_RELEASE"
+
+
+
+def test_output_preserves_historical_freshness_snapshot() -> None:
+    store = ResearchStore(":memory:")
+    run = store.create_run("Historical freshness snapshot")
+    _, evidence = _evidence_with_source(
+        store,
+        run["run_id"],
+        slug="historical-price",
+        data_cutoff="2026-09-22T11:30:00Z",
+    )
+    initial = store.evaluate_evidence_freshness(
+        evidence["evidence_id"],
+        policy_name="market_price",
+        as_of="2026-09-22T12:00:00Z",
+    )
+    claim = store.add_claim(
+        run["run_id"],
+        statement="Price observation is current at noon.",
+        classification="VERIFIED",
+        observation_type="ACTUAL",
+        supporting_evidence_ids=[evidence["evidence_id"]],
+    )
+    output = store.create_output(
+        run["run_id"],
+        consumer_type="alerting",
+        output_type="ALERT",
+        fragments=[
+            {
+                "content": "Price observation is current at noon.",
+                "claim_ids": [claim["claim_id"]],
+                "asserted_observation_type": "ACTUAL",
+            }
+        ],
+    )
+
+    later = store.evaluate_evidence_freshness(
+        evidence["evidence_id"],
+        policy_name="market_price",
+        as_of="2026-09-22T15:00:00Z",
+    )
+    resolved = store.get_output(output["output_id"])
+    ref = resolved["fragments"][0]["provenance_refs"][0]["evidence"][0]
+
+    assert initial["status"] == "FRESH"
+    assert later["status"] == "STALE"
+    assert ref["freshness_at_output"]["freshness_id"] == initial["freshness_id"]
+    assert ref["freshness_at_output"]["status"] == "FRESH"
+    assert ref["latest_freshness"]["freshness_id"] == later["freshness_id"]
+    assert ref["latest_freshness"]["status"] == "STALE"
+
+
+def test_output_without_prior_evaluation_does_not_rewrite_history() -> None:
+    store = ResearchStore(":memory:")
+    run = store.create_run("No freshness at output creation")
+    _, evidence = _evidence_with_source(
+        store,
+        run["run_id"],
+        slug="late-evaluated-price",
+        data_cutoff="2026-09-22T11:30:00Z",
+    )
+    claim = store.add_claim(
+        run["run_id"],
+        statement="Price was observed.",
+        classification="VERIFIED",
+        observation_type="ACTUAL",
+        supporting_evidence_ids=[evidence["evidence_id"]],
+    )
+    output = store.create_output(
+        run["run_id"],
+        consumer_type="api",
+        output_type="API_RESULT",
+        fragments=[
+            {
+                "content": "Price was observed.",
+                "claim_ids": [claim["claim_id"]],
+                "asserted_observation_type": "ACTUAL",
+            }
+        ],
+    )
+
+    evaluation = store.evaluate_evidence_freshness(
+        evidence["evidence_id"],
+        policy_name="market_price",
+        as_of="2026-09-22T12:00:00Z",
+    )
+    resolved = store.get_output(output["output_id"])
+    ref = resolved["fragments"][0]["provenance_refs"][0]["evidence"][0]
+
+    assert ref["freshness_at_output"] is None
+    assert ref["latest_freshness"]["freshness_id"] == evaluation["freshness_id"]
