@@ -394,6 +394,56 @@ def transcribe_chunk(
     return resp.text
 
 
+
+def transcribe_chunk_timed(
+    chunk: Path,
+    provider: str,
+    *,
+    config: Optional[Config] = None,
+    timeout: int = 120,
+) -> list[dict]:
+    """Transcribe with provider timestamps when supported; fall back to one bounded segment."""
+    if provider not in PROVIDERS:
+        raise TranscribeError(f"unknown provider: {provider}")
+    cfg = config or Config()
+    key = _provider_key(provider, cfg)
+    if not key:
+        raise NoProviderConfigured(f"{provider}: missing {PROVIDERS[provider]['key_field']}")
+    info = PROVIDERS[provider]
+    data = {"model": info["model"], "response_format": "verbose_json"}
+    if provider == "openai":
+        data["timestamp_granularities[]"] = "segment"
+    with chunk.open("rb") as fh:
+        try:
+            resp = requests.post(
+                info["endpoint"], headers={"Authorization": f"Bearer {key}"},
+                files={"file": (chunk.name, fh, "audio/m4a")}, data=data, timeout=timeout,
+            )
+        except requests.RequestException as e:
+            raise TranscribeError(f"{provider}: network error: {e}") from e
+    if not resp.ok:
+        text = transcribe_chunk(chunk, provider, config=cfg, timeout=timeout).strip()
+        duration = _probe_audio_duration(chunk)
+        return [{"start": 0.0, "end": duration, "text": text, "timing_source": "chunk_fallback"}]
+    try:
+        payload = resp.json()
+    except ValueError:
+        text = resp.text.strip()
+        return [{"start": 0.0, "end": _probe_audio_duration(chunk), "text": text,
+                 "timing_source": "chunk_fallback"}]
+    segments = []
+    for seg in payload.get("segments") or []:
+        text = str(seg.get("text") or "").strip()
+        if text:
+            segments.append({"start": float(seg.get("start") or 0.0),
+                             "end": float(seg.get("end") or 0.0), "text": text,
+                             "timing_source": "provider_segment"})
+    if segments:
+        return segments
+    text = str(payload.get("text") or "").strip()
+    return [{"start": 0.0, "end": _probe_audio_duration(chunk), "text": text,
+             "timing_source": "chunk_fallback"}]
+
 def _provider_order(provider: str) -> List[str]:
     if provider == "auto":
         return ["groq", "openai"]
