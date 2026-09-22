@@ -96,6 +96,13 @@ The latest evaluation is exposed in:
 - ResearchRun export;
 - OutputFragment provenance.
 
+Outputs also preserve the freshness evaluation that existed **at output creation time**.
+This prevents later re-evaluation from rewriting history.
+
+Therefore Output provenance exposes both:
+- `freshness_at_output`: immutable historical snapshot link;
+- `latest_freshness`: most recent evaluation now.
+
 Thus a consumer can reconstruct:
 
 ```text
