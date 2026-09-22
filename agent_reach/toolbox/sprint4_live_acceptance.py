@@ -7,6 +7,7 @@ import sys
 from typing import Any
 
 from agent_reach.toolbox.gateway import AhmedToolboxGateway
+
 SOURCE_URL = (
     "https://www.iea.org/reports/key-questions-on-energy-and-ai/executive-summary"
 )
