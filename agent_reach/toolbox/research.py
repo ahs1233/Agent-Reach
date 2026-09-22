@@ -1,8 +1,8 @@
-"""Core evidence, freshness, and output-integrity store for Ahmed Research Engine.
+"""Core evidence, freshness, source-lineage, and output-integrity store.
 
-The core remains domain-agnostic and output-agnostic. Freshness is categorical
-and policy-driven; source-quality, independence, conflict, causal, and PanWatch
-state scoring remain outside this layer.
+The core remains domain-agnostic and output-agnostic. Freshness and source
+independence are explicit auditable assessments; source-quality, numerical
+conflict, causal, and PanWatch state scoring remain outside this layer.
 """
 
 from __future__ import annotations
@@ -18,6 +18,11 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from .freshness import evaluate_freshness
+from .source_independence import (
+    SOURCE_RELATIONSHIP_TYPES,
+    assess_source_independence,
+    normalize_publisher,
+)
 
 OBSERVATION_TYPES = {
     "ACTUAL",
@@ -202,6 +207,25 @@ class ResearchStore:
             FOREIGN KEY(source_id) REFERENCES sources(source_id)
         );
 
+        CREATE TABLE IF NOT EXISTS source_relationships (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            relationship_id TEXT UNIQUE,
+            run_id TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            related_source_id TEXT NOT NULL,
+            relationship_type TEXT NOT NULL,
+            basis TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            UNIQUE(run_id, source_id, related_source_id, relationship_type),
+            FOREIGN KEY(run_id) REFERENCES research_runs(run_id) ON DELETE CASCADE,
+            FOREIGN KEY(source_id) REFERENCES sources(source_id),
+            FOREIGN KEY(related_source_id) REFERENCES sources(source_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_source_relationships_run
+        ON source_relationships(run_id, seq);
+
         CREATE TABLE IF NOT EXISTS retrieval_events (
             seq INTEGER PRIMARY KEY AUTOINCREMENT,
             run_id TEXT NOT NULL,
@@ -266,6 +290,25 @@ class ResearchStore:
             FOREIGN KEY(claim_id) REFERENCES claims(claim_id) ON DELETE CASCADE,
             FOREIGN KEY(evidence_id) REFERENCES evidence_items(evidence_id)
         );
+
+        CREATE TABLE IF NOT EXISTS source_independence_evaluations (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            independence_id TEXT UNIQUE,
+            run_id TEXT NOT NULL,
+            claim_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            supporting_source_count INTEGER NOT NULL,
+            supporting_url_count INTEGER NOT NULL,
+            effective_lineage_count INTEGER NOT NULL,
+            strict_confidence_basis_source_count INTEGER NOT NULL,
+            details_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES research_runs(run_id) ON DELETE CASCADE,
+            FOREIGN KEY(claim_id) REFERENCES claims(claim_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_source_independence_claim
+        ON source_independence_evaluations(claim_id, seq);
 
         CREATE TABLE IF NOT EXISTS outputs (
             seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -339,6 +382,17 @@ class ResearchStore:
             FOREIGN KEY(fragment_id) REFERENCES output_fragments(fragment_id) ON DELETE CASCADE,
             FOREIGN KEY(evidence_id) REFERENCES evidence_items(evidence_id),
             FOREIGN KEY(freshness_id) REFERENCES freshness_evaluations(freshness_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS output_fragment_source_independence (
+            fragment_id TEXT NOT NULL,
+            claim_id TEXT NOT NULL,
+            independence_id TEXT NOT NULL,
+            PRIMARY KEY(fragment_id, claim_id),
+            FOREIGN KEY(fragment_id) REFERENCES output_fragments(fragment_id) ON DELETE CASCADE,
+            FOREIGN KEY(claim_id) REFERENCES claims(claim_id),
+            FOREIGN KEY(independence_id)
+                REFERENCES source_independence_evaluations(independence_id)
         );
         """
         with self._lock, self._conn:
@@ -698,6 +752,155 @@ class ResearchStore:
                 ],
             }
 
+    def record_source_relationship(
+        self,
+        run_id: str,
+        *,
+        source_id: str,
+        related_source_id: str,
+        relationship_type: str,
+        basis: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Record explicit source lineage or independence evidence."""
+        self._require_run(run_id)
+        left = str(source_id or "").strip()
+        right = str(related_source_id or "").strip()
+        if not left or not right:
+            raise ValueError("source_id and related_source_id are required")
+        if left == right:
+            raise ValueError("a source cannot have a relationship with itself")
+        rel_type = _normalize_enum(
+            relationship_type,
+            SOURCE_RELATIONSHIP_TYPES,
+            "source relationship_type",
+        )
+
+        with self._lock, self._conn:
+            rows = self._conn.execute(
+                """
+                SELECT s.*
+                FROM research_run_sources rs
+                JOIN sources s ON s.source_id = rs.source_id
+                WHERE rs.run_id = ? AND s.source_id IN (?, ?)
+                """,
+                (run_id, left, right),
+            ).fetchall()
+            found = {str(row["source_id"]): row for row in rows}
+            missing = [item for item in (left, right) if item not in found]
+            if missing:
+                raise ValueError(
+                    "source relationships require both sources in the same run: "
+                    + ", ".join(missing)
+                )
+
+            if rel_type == "INDEPENDENT_OF":
+                left_row = found[left]
+                right_row = found[right]
+                same_url = (
+                    str(left_row["canonical_url"])
+                    == str(right_row["canonical_url"])
+                )
+                same_hash = (
+                    str(left_row["content_hash"])
+                    == str(right_row["content_hash"])
+                )
+                left_publisher = normalize_publisher(left_row["publisher"])
+                right_publisher = normalize_publisher(right_row["publisher"])
+                same_publisher = bool(
+                    left_publisher
+                    and right_publisher
+                    and left_publisher == right_publisher
+                )
+                if same_url or same_hash or same_publisher:
+                    raise ValueError(
+                        "cannot assert INDEPENDENT_OF for sources that share "
+                        "canonical URL, representation hash, or publisher"
+                    )
+                left, right = sorted([left, right])
+
+            existing = self._conn.execute(
+                """
+                SELECT relationship_id
+                FROM source_relationships
+                WHERE run_id = ? AND source_id = ?
+                  AND related_source_id = ? AND relationship_type = ?
+                """,
+                (run_id, left, right, rel_type),
+            ).fetchone()
+            if existing is not None:
+                return self.get_source_relationship(
+                    str(existing["relationship_id"])
+                )
+
+            cursor = self._conn.execute(
+                """
+                INSERT INTO source_relationships(
+                    relationship_id, run_id, source_id, related_source_id,
+                    relationship_type, basis, metadata_json, created_at
+                )
+                VALUES(NULL, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    left,
+                    right,
+                    rel_type,
+                    str(basis).strip() if basis else None,
+                    _json_dumps(metadata or {}),
+                    utc_now(),
+                ),
+            )
+            relationship_id = self._public_id("SR", int(cursor.lastrowid))
+            self._conn.execute(
+                """
+                UPDATE source_relationships
+                SET relationship_id = ?
+                WHERE seq = ?
+                """,
+                (relationship_id, cursor.lastrowid),
+            )
+        return self.get_source_relationship(relationship_id)
+
+    def get_source_relationship(self, relationship_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT * FROM source_relationships
+                WHERE relationship_id = ?
+                """,
+                (relationship_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(
+                    f"unknown source relationship: {relationship_id}"
+                )
+        return {
+            "relationship_id": row["relationship_id"],
+            "run_id": row["run_id"],
+            "source_id": row["source_id"],
+            "related_source_id": row["related_source_id"],
+            "relationship_type": row["relationship_type"],
+            "basis": row["basis"],
+            "metadata": _json_loads(row["metadata_json"], {}),
+            "created_at": row["created_at"],
+        }
+
+    def get_source_relationships(self, run_id: str) -> list[dict[str, Any]]:
+        self._require_run(run_id)
+        with self._lock:
+            ids = [
+                str(row["relationship_id"])
+                for row in self._conn.execute(
+                    """
+                    SELECT relationship_id FROM source_relationships
+                    WHERE run_id = ? ORDER BY seq
+                    """,
+                    (run_id,),
+                ).fetchall()
+            ]
+        return [self.get_source_relationship(item) for item in ids]
+
     def add_evidence(
         self,
         run_id: str,
@@ -958,6 +1161,11 @@ class ResearchStore:
                 "confidence_score": row["confidence_score"],
                 "freshness_score": row["freshness_score"],
                 "verification_count": row["verification_count"],
+                "latest_source_independence": (
+                    self.get_latest_claim_source_independence(
+                        str(row["claim_id"])
+                    )
+                ),
                 "provenance": _json_loads(row["provenance_json"], {}),
                 "created_at": row["created_at"],
             }
@@ -1126,6 +1334,29 @@ class ResearchStore:
                         """,
                         (fragment_id, claim_id, claim_position),
                     )
+                    independence_row = self._conn.execute(
+                        """
+                        SELECT independence_id
+                        FROM source_independence_evaluations
+                        WHERE claim_id = ?
+                        ORDER BY seq DESC LIMIT 1
+                        """,
+                        (claim_id,),
+                    ).fetchone()
+                    if independence_row is not None:
+                        self._conn.execute(
+                            """
+                            INSERT INTO output_fragment_source_independence(
+                                fragment_id, claim_id, independence_id
+                            )
+                            VALUES(?, ?, ?)
+                            """,
+                            (
+                                fragment_id,
+                                claim_id,
+                                str(independence_row["independence_id"]),
+                            ),
+                        )
 
                 claim_placeholders = ",".join("?" for _ in claim_ids)
                 evidence_rows = self._conn.execute(
@@ -1198,6 +1429,25 @@ class ResearchStore:
             provenance_refs: list[dict[str, Any]] = []
             for claim_link in claim_rows:
                 claim = self.get_claim(str(claim_link["claim_id"]))
+                with self._lock:
+                    independence_snapshot_row = self._conn.execute(
+                        """
+                        SELECT independence_id
+                        FROM output_fragment_source_independence
+                        WHERE fragment_id = ? AND claim_id = ?
+                        """,
+                        (
+                            fragment_row["fragment_id"],
+                            claim["claim_id"],
+                        ),
+                    ).fetchone()
+                source_independence_at_output = (
+                    self.get_source_independence_evaluation(
+                        str(independence_snapshot_row["independence_id"])
+                    )
+                    if independence_snapshot_row is not None
+                    else None
+                )
                 evidence_refs: list[dict[str, Any]] = []
                 for relation, evidence_ids in (
                     ("SUPPORTS", claim["supporting_evidence_ids"]),
@@ -1271,6 +1521,12 @@ class ResearchStore:
                         "statement": claim["statement"],
                         "classification": claim["classification"],
                         "observation_type": claim["observation_type"],
+                        "source_independence_at_output": (
+                            source_independence_at_output
+                        ),
+                        "latest_source_independence": claim[
+                            "latest_source_independence"
+                        ],
                         "evidence": evidence_refs,
                     }
                 )
@@ -1349,6 +1605,163 @@ class ResearchStore:
                 "fragments": len(output["fragments"]),
             },
         }
+
+    def evaluate_claim_source_independence(
+        self,
+        claim_id: str,
+    ) -> dict[str, Any]:
+        """Assess supporting-source lineages without equating URLs with sources."""
+        claim_key = str(claim_id or "").strip()
+        if not claim_key:
+            raise ValueError("claim_id is required")
+
+        with self._lock:
+            claim_row = self._conn.execute(
+                "SELECT run_id FROM claims WHERE claim_id = ?",
+                (claim_key,),
+            ).fetchone()
+            if claim_row is None:
+                raise ValueError(f"unknown claim: {claim_key}")
+            run_id = str(claim_row["run_id"])
+            source_ids = [
+                str(row["source_id"])
+                for row in self._conn.execute(
+                    """
+                    SELECT DISTINCT e.source_id
+                    FROM claim_evidence ce
+                    JOIN evidence_items e ON e.evidence_id = ce.evidence_id
+                    WHERE ce.claim_id = ? AND ce.relation = 'SUPPORTS'
+                    ORDER BY e.source_id
+                    """,
+                    (claim_key,),
+                ).fetchall()
+            ]
+            run_source_ids = [
+                str(row["source_id"])
+                for row in self._conn.execute(
+                    """
+                    SELECT source_id FROM research_run_sources
+                    WHERE run_id = ?
+                    ORDER BY source_id
+                    """,
+                    (run_id,),
+                ).fetchall()
+            ]
+
+        sources = [
+            self.get_source(source_id, run_id=run_id)
+            for source_id in run_source_ids
+        ]
+        relationships = self.get_source_relationships(run_id)
+        assessment = assess_source_independence(
+            supporting_source_ids=source_ids,
+            sources=sources,
+            relationships=relationships,
+        )
+
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO source_independence_evaluations(
+                    independence_id, run_id, claim_id, status,
+                    supporting_source_count, supporting_url_count,
+                    effective_lineage_count,
+                    strict_confidence_basis_source_count,
+                    details_json, created_at
+                )
+                VALUES(NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    claim_key,
+                    assessment["status"],
+                    assessment["supporting_source_count"],
+                    assessment["supporting_url_count"],
+                    assessment["effective_lineage_count"],
+                    assessment["strict_confidence_basis_source_count"],
+                    _json_dumps(assessment),
+                    utc_now(),
+                ),
+            )
+            independence_id = self._public_id("SI", int(cursor.lastrowid))
+            self._conn.execute(
+                """
+                UPDATE source_independence_evaluations
+                SET independence_id = ?
+                WHERE seq = ?
+                """,
+                (independence_id, cursor.lastrowid),
+            )
+        return self.get_source_independence_evaluation(independence_id)
+
+    def get_source_independence_evaluation(
+        self,
+        independence_id: str,
+    ) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT * FROM source_independence_evaluations
+                WHERE independence_id = ?
+                """,
+                (independence_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(
+                    f"unknown source independence evaluation: {independence_id}"
+                )
+        details = _json_loads(row["details_json"], {})
+        return {
+            "independence_id": row["independence_id"],
+            "run_id": row["run_id"],
+            "claim_id": row["claim_id"],
+            "status": row["status"],
+            "supporting_source_count": row["supporting_source_count"],
+            "supporting_url_count": row["supporting_url_count"],
+            "effective_lineage_count": row["effective_lineage_count"],
+            "strict_confidence_basis_source_count": row[
+                "strict_confidence_basis_source_count"
+            ],
+            "duplicate_or_dependency_reduction": details.get(
+                "duplicate_or_dependency_reduction", 0
+            ),
+            "verified_independent_pair_count": details.get(
+                "verified_independent_pair_count", 0
+            ),
+            "total_lineage_pair_count": details.get(
+                "total_lineage_pair_count", 0
+            ),
+            "lineages": details.get("lineages", []),
+            "verified_independent_pairs": details.get(
+                "verified_independent_pairs", []
+            ),
+            "relationship_conflicts": details.get(
+                "relationship_conflicts", []
+            ),
+            "method": details.get("method"),
+            "notes": details.get("notes", []),
+            "created_at": row["created_at"],
+        }
+
+    def get_latest_claim_source_independence(
+        self,
+        claim_id: str,
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT independence_id
+                FROM source_independence_evaluations
+                WHERE claim_id = ?
+                ORDER BY seq DESC LIMIT 1
+                """,
+                (claim_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self.get_source_independence_evaluation(
+            str(row["independence_id"])
+        )
 
     def evaluate_evidence_freshness(
         self,
@@ -1514,6 +1927,7 @@ class ResearchStore:
         return {
             "research_run": run,
             "sources": [self.get_source(item, run_id=run_id) for item in source_ids],
+            "source_relationships": self.get_source_relationships(run_id),
             "evidence": [
                 {
                     **self.get_evidence(item),
