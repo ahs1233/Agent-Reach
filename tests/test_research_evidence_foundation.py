@@ -193,3 +193,67 @@ def test_claim_cannot_reference_evidence_from_another_run() -> None:
             classification="INFERENCE",
             supporting_evidence_ids=[evidence["evidence_id"]],
         )
+
+
+
+def test_export_uses_run_specific_retrieval_provenance_for_reused_source() -> None:
+    store = ResearchStore(":memory:")
+    run_a = store.create_run("A")
+    run_b = store.create_run("B")
+
+    source_a = store.record_source(
+        run_a["run_id"],
+        url="https://example.com/report",
+        content="stable content",
+        retrieval_tool="Jina",
+        retrieval_method="reader",
+        retrieval_status="SUCCESS",
+        retrieved_at="2026-09-22T08:00:00+00:00",
+    )
+    evidence_a = store.add_evidence(
+        run_a["run_id"],
+        source_id=source_a["source_id"],
+        supporting_passage="stable content",
+        observation_type="ACTUAL",
+    )
+    store.add_claim(
+        run_a["run_id"],
+        statement="Stable claim A",
+        classification="VERIFIED",
+        supporting_evidence_ids=[evidence_a["evidence_id"]],
+    )
+
+    source_b = store.record_source(
+        run_b["run_id"],
+        url="https://example.com/report",
+        content="stable content",
+        retrieval_tool="Scrapling",
+        retrieval_method="fetch",
+        retrieval_status="SUCCESS",
+        retrieved_at="2026-09-22T09:00:00+00:00",
+    )
+    evidence_b = store.add_evidence(
+        run_b["run_id"],
+        source_id=source_b["source_id"],
+        supporting_passage="stable content",
+        observation_type="ACTUAL",
+    )
+    store.add_claim(
+        run_b["run_id"],
+        statement="Stable claim B",
+        classification="VERIFIED",
+        supporting_evidence_ids=[evidence_b["evidence_id"]],
+    )
+
+    assert source_a["source_id"] == source_b["source_id"]
+
+    ledger_a = store.export_run(run_a["run_id"])["ledger"][0]
+    ledger_b = store.export_run(run_b["run_id"])["ledger"][0]
+
+    assert ledger_a["retrieval_tool"] == "Jina"
+    assert ledger_a["retrieval_method"] == "reader"
+    assert ledger_a["retrieved_at"] == "2026-09-22T08:00:00+00:00"
+
+    assert ledger_b["retrieval_tool"] == "Scrapling"
+    assert ledger_b["retrieval_method"] == "fetch"
+    assert ledger_b["retrieved_at"] == "2026-09-22T09:00:00+00:00"
