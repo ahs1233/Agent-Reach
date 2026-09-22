@@ -9,7 +9,7 @@ WORKDIR /app
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       python3 python3-venv python3-pip git curl ca-certificates gh ffmpeg \
+       python3 python3-venv python3-pip git curl ca-certificates gh ffmpeg chromium \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m venv /opt/venv
@@ -20,6 +20,7 @@ COPY agent_reach ./agent_reach
 COPY config ./config
 
 RUN pip install --no-cache-dir . \
+    && pip install --no-cache-dir -U yt-dlp-getpot-wpc \
     && npm install -g mcporter@0.13.13
 
 RUN npm install --prefix /app youtubei.js@latest
