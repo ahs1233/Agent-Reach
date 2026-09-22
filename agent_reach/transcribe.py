@@ -278,10 +278,39 @@ def _ytdlp_wpc_args() -> list[str]:
     return ["--extractor-args", f"youtubepot-wpc:browser_path={browser}"]
 
 
+def _is_instagram_url(url: str) -> bool:
+    host = (urlparse(url if "://" in url else "https://" + url).hostname or "").lower()
+    return host in {"instagram.com", "www.instagram.com"}
+
+
+def _download_instagram_public(url: str, out_dir: Path, prefix: str) -> Optional[Path]:
+    """Use parth-dl's public Instagram extractor as an independent backend."""
+    _require("parth-dl")
+    before = set(out_dir.iterdir())
+    try:
+        _run(["parth-dl", "--json", "--dir", str(out_dir), url], timeout=600)
+    except TranscribeError:
+        return None
+    candidates = [p for p in out_dir.iterdir() if p not in before and p.is_file()]
+    media = [p for p in candidates if p.suffix.lower() in {".mp4", ".mov", ".m4v", ".webm"}]
+    if not media:
+        return None
+    src = max(media, key=lambda p: p.stat().st_size)
+    dst = out_dir / f"{prefix}{src.suffix.lower()}"
+    if src != dst:
+        src.replace(dst)
+    _require_size_at_most(dst, MAX_SOURCE_BYTES, "downloaded Instagram source")
+    return dst
+
+
 def download_audio(url: str, out_dir: Path) -> Path:
     """Download audio with yt-dlp into out_dir; return the resulting file path."""
     _assert_safe_public_url(url)
     _require("yt-dlp")
+    if _is_instagram_url(url):
+        direct = _download_instagram_public(url, out_dir, "source")
+        if direct is not None:
+            return direct
     template = out_dir / "source.%(ext)s"
     common = [
         "yt-dlp", "--js-runtimes", "node", *_ytdlp_network_args(), "-x",
@@ -328,6 +357,10 @@ def download_video_for_frames(url: str, out_dir: Path) -> Path:
     """
     _assert_safe_public_url(url)
     _require("yt-dlp")
+    if _is_instagram_url(url):
+        direct = _download_instagram_public(url, out_dir, "visual_source")
+        if direct is not None:
+            return direct
     template = out_dir / "visual_source.%(ext)s"
     cmd = [
         "yt-dlp", "--js-runtimes", "node", *_ytdlp_network_args(), "--no-playlist", "--max-filesize", str(MAX_SOURCE_BYTES),
