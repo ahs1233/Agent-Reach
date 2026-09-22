@@ -147,8 +147,27 @@ def test_unavailable_remote_does_not_remove_local_tools():
     names = {tool["name"] for tool in gateway.list_tools()}
 
     assert {"reach_doctor", "reach_web_search", "reach_read_url"} <= names
-    assert "research_start_run" in names
-    assert "research_export_ledger" in names
+    assert "research_start_run" not in names
+    assert "research_export_ledger" not in names
+
+
+def test_research_tools_are_feature_gated():
+    disabled = AhmedToolboxGateway(
+        agent_reach=_FakeReach(),
+        research_enabled=False,
+    )
+    enabled = AhmedToolboxGateway(
+        agent_reach=_FakeReach(),
+        research_enabled=True,
+    )
+
+    disabled_names = {tool["name"] for tool in disabled.list_tools()}
+    enabled_names = {tool["name"] for tool in enabled.list_tools()}
+
+    assert "research_start_run" not in disabled_names
+    assert "research_export_ledger" not in disabled_names
+    assert "research_start_run" in enabled_names
+    assert "research_export_ledger" in enabled_names
 
 
 def test_namespaced_tool_calls_are_forwarded():
