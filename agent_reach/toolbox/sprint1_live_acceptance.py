@@ -135,13 +135,22 @@ def _retrieve(
     gateway: AhmedToolboxGateway, spec: dict[str, Any]
 ) -> tuple[str, str, str, list[dict[str, Any]]]:
     preferred = str(spec["preferred_tool"])
-    attempts = [preferred]
-    attempts.append("scrapling__fetch" if preferred == "reach_read_url" else "reach_read_url")
+    attempts = [
+        preferred,
+        "scrapling__fetch" if preferred == "reach_read_url" else "reach_read_url",
+        "scrapling__stealthy_fetch",
+    ]
+    attempts = list(dict.fromkeys(attempts))
 
     history: list[dict[str, Any]] = []
     failures: list[str] = []
     for tool in attempts:
-        method = "jina_reader" if tool == "reach_read_url" else "scrapling_fetch"
+        if tool == "reach_read_url":
+            method = "jina_reader"
+        elif tool == "scrapling__stealthy_fetch":
+            method = "scrapling_stealthy_fetch"
+        else:
+            method = "scrapling_fetch"
         try:
             if tool == "reach_read_url":
                 text = _call(
