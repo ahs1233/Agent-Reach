@@ -23,4 +23,9 @@ until curl -fsS "${YTDLP_POT_PROVIDER_URL}/ping" >/dev/null 2>&1; do
   sleep 1
 done
 
+if [ "${AHMED_VIDEO_LIVE_ACCEPTANCE:-0}" = "1" ]; then
+  echo "Running Ahmed Video Intelligence live acceptance..." >&2
+  /opt/venv/bin/python -m agent_reach.toolbox.video_live_acceptance
+fi
+
 exec ahmed-toolbox
