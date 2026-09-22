@@ -823,3 +823,20 @@ def ingest_media(source_url: str, *, provider: str = "auto",
             "transcript statements are source evidence, not independently verified facts",
         ],
     }
+
+
+def build_av_evidence_timeline(speech_evidence: dict[str, Any], visual_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge timestamped speech evidence and visual OCR into one bounded timeline."""
+    events: list[dict[str, Any]] = []
+    for item in speech_evidence.get("evidence", []):
+        events.append({
+            "kind": "speech",
+            "timestamp_seconds": float(item.get("start_seconds", 0.0)),
+            "end_seconds": float(item.get("end_seconds", 0.0)),
+            "citation": item.get("citation"),
+            "text": item.get("text", ""),
+            "confidence": item.get("confidence"),
+        })
+    events.extend(visual_events)
+    events.sort(key=lambda x: (float(x.get("timestamp_seconds", 0.0)), x.get("kind", "")))
+    return events
