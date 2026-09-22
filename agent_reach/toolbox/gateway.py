@@ -28,7 +28,7 @@ from agent_reach.channels.web import WebChannel
 
 from .research import ResearchStore
 from .research_mcp import handle_research_tool, research_tool_specs
-from .video import ingest_media, register_media_evidence, verification_queries
+from .video import (ingest_media, register_media_evidence, verification_queries, deep_understand_media, translate_media_manifest, extract_media_text)
 
 _MAX_REMOTE_RESPONSE_BYTES = 5 * 1024 * 1024
 _DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -406,6 +406,19 @@ class AhmedToolboxGateway:
                 "inputSchema": {"type": "object", "required": ["run_id", "url"], "properties": {"run_id": {"type": "string"}, "url": {"type": "string"}, "provider": {"type": "string", "enum": ["auto", "groq", "openai"], "default": "auto"}, "language": {"type": "string"}}, "additionalProperties": False},
             },
             {
+                "name": "research_analyze_media",
+                "description": "Deeply understand media, extract speech/visible text, optionally translate, and preserve timestamp provenance.",
+                "inputSchema": {"type": "object", "required": ["url"], "properties": {
+                    "url": {"type": "string"},
+                    "provider": {"type": "string", "enum": ["auto", "groq", "openai"], "default": "auto"},
+                    "language": {"type": "string"},
+                    "analyze_visuals": {"type": "boolean", "default": true},
+                    "target_language": {"type": "string"},
+                    "model": {"type": "string", "default": "gpt-5.6-luna"},
+                    "register_run_id": {"type": "string"}
+                }, "additionalProperties": False},
+            },
+            {
                 "name": "reach_read_url",
                 "description": (
                     "Read a public HTTP(S) page through Agent Reach's Jina Reader "
@@ -571,6 +584,35 @@ class AhmedToolboxGateway:
                 f"direct_exa={fallback_error[:1200]!r}"
             )
             return self._text_result(diagnostic, is_error=True)
+
+        if name == "research_analyze_media":
+            url = str(arguments.get("url") or "").strip()
+            if not url:
+                return self._text_result("url is required", is_error=True)
+            try:
+                model = str(arguments.get("model") or "gpt-5.6-luna")
+                manifest = ingest_media(
+                    url, provider=str(arguments.get("provider") or "auto"),
+                    language=(str(arguments.get("language")).strip() if arguments.get("language") else None),
+                    analyze_visuals=bool(arguments.get("analyze_visuals", True)), vision_model=model,
+                )
+                result = {
+                    "manifest": manifest,
+                    "extracted_text": extract_media_text(manifest),
+                    "understanding": deep_understand_media(manifest, model=model),
+                    "verification_work": verification_queries(manifest),
+                }
+                target = str(arguments.get("target_language") or "").strip()
+                if target:
+                    result["translation"] = translate_media_manifest(manifest, target, model=model)
+                run_id = str(arguments.get("register_run_id") or "").strip()
+                if run_id:
+                    if not self.research_enabled or self.research_store is None:
+                        return self._text_result("Ahmed Research Engine is not enabled", is_error=True)
+                    result["ledger"] = register_media_evidence(self.research_store, run_id, manifest)
+            except Exception as exc:  # noqa: BLE001
+                return self._text_result(f"Deep media analysis failed: {exc}", is_error=True)
+            return self._text_result(json.dumps(result, ensure_ascii=False, default=str))
 
         if name == "research_ingest_media_evidence":
             if not self.research_enabled or self.research_store is None:
