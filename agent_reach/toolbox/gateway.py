@@ -398,7 +398,7 @@ class AhmedToolboxGateway:
             {
                 "name": "reach_media_ingest",
                 "description": "Ingest public video/audio into timestamped transcript evidence with provenance.",
-                "inputSchema": {"type": "object", "required": ["url"], "properties": {"url": {"type": "string"}, "provider": {"type": "string", "enum": ["auto", "groq", "openai"], "default": "auto"}, "language": {"type": "string"}}, "additionalProperties": False},
+                "inputSchema": {"type": "object", "required": ["url"], "properties": {"url": {"type": "string"}, "provider": {"type": "string", "enum": ["auto", "groq", "openai"], "default": "auto"}, "language": {"type": "string"}, "analyze_visuals": {"type": "boolean", "default": false}, "vision_model": {"type": "string", "default": "gpt-5.6-luna"}}, "additionalProperties": False},
             },
             {
                 "name": "research_ingest_media_evidence",
@@ -580,7 +580,7 @@ class AhmedToolboxGateway:
             if not run_id or not url:
                 return self._text_result("run_id and url are required", is_error=True)
             try:
-                manifest = ingest_media(url, provider=str(arguments.get("provider") or "auto"), language=(str(arguments.get("language")).strip() if arguments.get("language") else None))
+                manifest = ingest_media(url, provider=str(arguments.get("provider") or "auto"), language=(str(arguments.get("language")).strip() if arguments.get("language") else None), analyze_visuals=bool(arguments.get("analyze_visuals", False)), vision_model=str(arguments.get("vision_model") or "gpt-5.6-luna"))
                 ledger = register_media_evidence(self.research_store, run_id, manifest)
                 result = {"manifest": manifest, "ledger": ledger, "verification_work": verification_queries(manifest)}
             except Exception as exc:  # noqa: BLE001
