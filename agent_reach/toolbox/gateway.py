@@ -28,6 +28,7 @@ from agent_reach.channels.web import WebChannel
 
 from .research import ResearchStore
 from .research_mcp import handle_research_tool, research_tool_specs
+from .video import ingest_media
 
 _MAX_REMOTE_RESPONSE_BYTES = 5 * 1024 * 1024
 _DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -395,6 +396,11 @@ class AhmedToolboxGateway:
                 },
             },
             {
+                "name": "reach_media_ingest",
+                "description": "Ingest public video/audio into timestamped transcript evidence with provenance.",
+                "inputSchema": {"type": "object", "required": ["url"], "properties": {"url": {"type": "string"}, "provider": {"type": "string", "enum": ["auto", "groq", "openai"], "default": "auto"}, "language": {"type": "string"}}, "additionalProperties": False},
+            },
+            {
                 "name": "reach_read_url",
                 "description": (
                     "Read a public HTTP(S) page through Agent Reach's Jina Reader "
@@ -560,6 +566,16 @@ class AhmedToolboxGateway:
                 f"direct_exa={fallback_error[:1200]!r}"
             )
             return self._text_result(diagnostic, is_error=True)
+
+        if name == "reach_media_ingest":
+            url = str(arguments.get("url") or "").strip()
+            if not url:
+                return self._text_result("url is required", is_error=True)
+            try:
+                manifest = ingest_media(url, provider=str(arguments.get("provider") or "auto"), language=(str(arguments.get("language")).strip() if arguments.get("language") else None))
+            except Exception as exc:  # noqa: BLE001
+                return self._text_result(f"Media ingestion failed: {exc}", is_error=True)
+            return self._text_result(json.dumps(manifest, ensure_ascii=False))
 
         if name == "reach_read_url":
             url = str(arguments.get("url") or "").strip()
