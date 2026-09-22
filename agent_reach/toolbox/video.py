@@ -13,8 +13,8 @@ import subprocess
 from agent_reach.config import Config
 from agent_reach.transcribe import (
     CHUNK_SECONDS, NoProviderConfigured, TranscribeError, _provider_key,
-    _require_duration_within_budget, chunk_audio, compress_audio,
-    download_audio, transcribe_chunk,
+    _require_duration_within_budget, _probe_audio_duration, chunk_audio, compress_audio,
+    download_audio, transcribe_chunk, transcribe_chunk_timed,
 )
 
 @dataclass(frozen=True)
@@ -598,12 +598,20 @@ def ingest_media(source_url: str, *, provider: str = "auto",
         compressed = compress_audio(downloaded, root)
         chunks = chunk_audio(compressed, root, CHUNK_SECONDS)
         segments = []
-        for index, chunk in enumerate(chunks):
-            transcript = transcribe_chunk(chunk, selected, config=cfg).strip()
-            start = float(index * CHUNK_SECONDS)
-            end = min(float((index + 1) * CHUNK_SECONDS), duration)
-            segments.append(MediaSegment(index, start, end, transcript,
-                hashlib.sha256(transcript.encode("utf-8")).hexdigest()))
+        segment_index = 0
+        chunk_offset = 0.0
+        for chunk in chunks:
+            timed = transcribe_chunk_timed(chunk, selected, config=cfg)
+            for part in timed:
+                transcript = str(part.get("text") or "").strip()
+                if not transcript:
+                    continue
+                start = min(chunk_offset + float(part.get("start") or 0.0), duration)
+                end = min(chunk_offset + float(part.get("end") or 0.0), duration)
+                segments.append(MediaSegment(segment_index, start, max(start, end), transcript,
+                    hashlib.sha256(transcript.encode("utf-8")).hexdigest()))
+                segment_index += 1
+            chunk_offset += _probe_audio_duration(chunk)
     return {
         "source_url": source_url,
         "media_type": "video_or_audio",
