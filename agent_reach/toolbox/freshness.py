@@ -269,15 +269,24 @@ def evaluate_freshness(
                 if not latest_known_cutoff
                 else "UNPARSEABLE_LATEST_KNOWN_CUTOFF"
             )
+        elif latest.start > as_of_dt:
+            status = "UNKNOWN"
+            reason = "FUTURE_LATEST_KNOWN_CUTOFF"
         elif data_interval.end < latest.start:
             status = "STALE"
             reason = "OLDER_THAN_LATEST_KNOWN_RELEASE"
         elif data_interval.start > latest.end:
             status = "FRESH"
             reason = "NEWER_THAN_DECLARED_LATEST_RELEASE"
-        else:
+        elif (
+            data_interval.raw == latest.raw
+            and data_interval.precision == latest.precision
+        ):
             status = "FRESH"
             reason = "MATCHES_LATEST_KNOWN_RELEASE"
+        else:
+            status = "UNCERTAIN"
+            reason = "DATE_PRECISION_OVERLAPS_LATEST_RELEASE"
     else:  # pragma: no cover - guarded by policy resolver
         raise ValueError(f"unsupported policy mode: {policy['mode']}")
 
