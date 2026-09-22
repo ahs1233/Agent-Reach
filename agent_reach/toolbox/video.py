@@ -203,6 +203,25 @@ def register_media_evidence(store: Any, run_id: str, manifest: dict[str, Any]) -
         ],
     )
     evidence = []
+    for visual in manifest.get("visual_evidence_candidates") or []:
+        passage = str(visual.get("supporting_passage") or "").strip()
+        if not passage:
+            continue
+        item = store.add_evidence(
+            run_id, source_id=source["source_id"], supporting_passage=passage,
+            observation_type="UNKNOWN",
+            structured_fact={
+                "media_citation": visual.get("citation"),
+                "timestamp_seconds": visual.get("timestamp_seconds"),
+                "frame_sha256": visual.get("frame_sha256"),
+                "visible_text": visual.get("visible_text"),
+                "scene_description": visual.get("scene_description"),
+                "notable_visual_claims": visual.get("notable_visual_claims"),
+                "verification_status": "VISUAL_OBSERVATION_UNVERIFIED",
+            },
+            extraction_method="multimodal_keyframe_analysis",
+        )
+        evidence.append(item)
     for candidate in manifest.get("claim_candidates") or []:
         passage = str(candidate.get("statement_source_text") or "").strip()
         if not passage:
