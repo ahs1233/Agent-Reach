@@ -330,6 +330,16 @@ class ResearchStore:
 
         CREATE INDEX IF NOT EXISTS idx_freshness_evidence
         ON freshness_evaluations(evidence_id, seq);
+
+        CREATE TABLE IF NOT EXISTS output_fragment_freshness (
+            fragment_id TEXT NOT NULL,
+            evidence_id TEXT NOT NULL,
+            freshness_id TEXT NOT NULL,
+            PRIMARY KEY(fragment_id, evidence_id),
+            FOREIGN KEY(fragment_id) REFERENCES output_fragments(fragment_id) ON DELETE CASCADE,
+            FOREIGN KEY(evidence_id) REFERENCES evidence_items(evidence_id),
+            FOREIGN KEY(freshness_id) REFERENCES freshness_evaluations(freshness_id)
+        );
         """
         with self._lock, self._conn:
             self._conn.executescript(schema)
@@ -1117,6 +1127,42 @@ class ResearchStore:
                         (fragment_id, claim_id, claim_position),
                     )
 
+                claim_placeholders = ",".join("?" for _ in claim_ids)
+                evidence_rows = self._conn.execute(
+                    f"""
+                    SELECT DISTINCT ce.evidence_id
+                    FROM claim_evidence ce
+                    WHERE ce.claim_id IN ({claim_placeholders})
+                    """,
+                    tuple(claim_ids),
+                ).fetchall()
+                for evidence_row in evidence_rows:
+                    evidence_id = str(evidence_row["evidence_id"])
+                    freshness_row = self._conn.execute(
+                        """
+                        SELECT freshness_id
+                        FROM freshness_evaluations
+                        WHERE evidence_id = ?
+                        ORDER BY seq DESC
+                        LIMIT 1
+                        """,
+                        (evidence_id,),
+                    ).fetchone()
+                    if freshness_row is not None:
+                        self._conn.execute(
+                            """
+                            INSERT INTO output_fragment_freshness(
+                                fragment_id, evidence_id, freshness_id
+                            )
+                            VALUES(?, ?, ?)
+                            """,
+                            (
+                                fragment_id,
+                                evidence_id,
+                                str(freshness_row["freshness_id"]),
+                            ),
+                        )
+
         return self.get_output(output_id)
 
     def get_output(self, output_id: str) -> dict[str, Any]:
@@ -1163,6 +1209,25 @@ class ResearchStore:
                             evidence["source_id"],
                             run_id=str(output_row["run_id"]),
                         )
+                        with self._lock:
+                            snapshot_row = self._conn.execute(
+                                """
+                                SELECT freshness_id
+                                FROM output_fragment_freshness
+                                WHERE fragment_id = ? AND evidence_id = ?
+                                """,
+                                (
+                                    fragment_row["fragment_id"],
+                                    evidence["evidence_id"],
+                                ),
+                            ).fetchone()
+                        freshness_at_output = (
+                            self.get_freshness_evaluation(
+                                str(snapshot_row["freshness_id"])
+                            )
+                            if snapshot_row is not None
+                            else None
+                        )
                         evidence_refs.append(
                             {
                                 "relation": relation,
@@ -1176,6 +1241,7 @@ class ResearchStore:
                                 "reference_period": evidence["reference_period"],
                                 "observation_type": evidence["observation_type"],
                                 "forecast_horizon": evidence["forecast_horizon"],
+                                "freshness_at_output": freshness_at_output,
                                 "latest_freshness": self.get_latest_evidence_freshness(
                                     evidence["evidence_id"]
                                 ),
