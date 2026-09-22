@@ -125,11 +125,12 @@ def run_acceptance() -> dict[str, Any]:
         "research_get_output",
         {"output_id": answer_output},
     )
-    freshness = (
-        resolved["fragments"][0]["provenance_refs"][0]["evidence"][0][
-            "latest_freshness"
-        ]
-    )
+    evidence_ref = resolved["fragments"][0]["provenance_refs"][0]["evidence"][0]
+    if evidence_ref["freshness_at_output"] is not None:
+        raise RuntimeError(
+            "Sprint 2 output history was rewritten by a later freshness evaluation"
+        )
+    freshness = evidence_ref["latest_freshness"]
     if not freshness or freshness["freshness_id"] != latest_release["freshness_id"]:
         raise RuntimeError("output provenance did not carry latest freshness evaluation")
 
@@ -156,6 +157,7 @@ def run_acceptance() -> dict[str, Any]:
             technology["status"] != custom["status"]
         ),
         "output_provenance_carries_freshness": True,
+        "historical_output_not_rewritten": True,
         "retrieval": sprint2["retrieval"],
     }
 
