@@ -23,6 +23,11 @@ until curl -fsS "${YTDLP_POT_PROVIDER_URL}/ping" >/dev/null 2>&1; do
   sleep 1
 done
 
+if [ "${AHMED_YOUTUBEJS_LIVE_ACCEPTANCE:-0}" = "1" ]; then
+  echo "Running independent YouTube.js acquisition acceptance..." >&2
+  node --input-type=module -e 'import { Innertube, UniversalCache } from "youtubei.js"; const y=await Innertube.create({cache:new UniversalCache(false)}); const i=await y.getInfo(process.env.AHMED_VIDEO_ID || "9Ignyhh1WqQ"); const d=await i.download({type:"audio",quality:"best"}); const r=d.getReader(); let n=0; while(n<262144){const x=await r.read(); if(x.done) break; n+=x.value.byteLength;} if(n<=0) throw new Error("YouTube.js returned no media bytes"); console.log("AHMED_YOUTUBEJS_BENCHMARK="+JSON.stringify({video_id:process.env.AHMED_VIDEO_ID||"9Ignyhh1WqQ",media_bytes_sampled:n,title:i.basic_info?.title||null}));'
+fi
+
 if [ "${AHMED_VIDEO_LIVE_ACCEPTANCE:-0}" = "1" ]; then
   echo "Running Ahmed Video Intelligence live acceptance..." >&2
   /opt/venv/bin/python -m agent_reach.toolbox.video_live_acceptance
