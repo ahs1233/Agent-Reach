@@ -52,7 +52,7 @@ SOURCES = [
         "reference_period": "2025-2030",
         "observation_type": "FORECAST",
         "forecast_horizon": "2030",
-        "needles": ["data centres", "half"],
+        "needles": ["data centres", "data centers", "2030", "advanced economies"],
     },
 ]
 
@@ -111,14 +111,23 @@ def _retrieve(
     for tool in attempts:
         try:
             if tool == "reach_read_url":
-                raw = _call(
+                text = _call(
                     gateway,
                     tool,
                     {"url": spec["url"], "max_chars": 100000},
                 )
-                return raw, tool, "jina_reader"
-            raw = _call(gateway, tool, {"url": spec["url"]})
-            return _extract_payload_text(raw), tool, "scrapling_fetch"
+                method = "jina_reader"
+            else:
+                raw = _call(gateway, tool, {"url": spec["url"]})
+                text = _extract_payload_text(raw)
+                method = "scrapling_fetch"
+
+            lowered = text.lower()
+            if not any(str(needle).lower() in lowered for needle in spec["needles"]):
+                raise RuntimeError(
+                    "retrieval succeeded but expected evidence tokens were absent"
+                )
+            return text, tool, method
         except Exception as exc:  # noqa: BLE001
             failures.append(f"{tool}: {type(exc).__name__}: {exc}")
     raise RuntimeError("all retrieval paths failed; " + " | ".join(failures))
