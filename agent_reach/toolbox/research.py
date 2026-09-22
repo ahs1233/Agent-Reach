@@ -309,6 +309,7 @@ class ResearchStore:
                 "observation_type",
                 "TEXT NOT NULL DEFAULT 'UNKNOWN'",
             )
+            self._backfill_claim_observation_types()
 
     def _ensure_column(self, table: str, column: str, ddl: str) -> None:
         columns = {
@@ -317,6 +318,39 @@ class ResearchStore:
         }
         if column not in columns:
             self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+    def _backfill_claim_observation_types(self) -> None:
+        """Backfill Sprint 1 claims when supporting evidence has one clear type."""
+        claims = self._conn.execute(
+            """
+            SELECT claim_id FROM claims
+            WHERE observation_type = 'UNKNOWN'
+            """
+        ).fetchall()
+        for row in claims:
+            claim_id = str(row["claim_id"] or "")
+            if not claim_id:
+                continue
+            evidence_types = {
+                str(item["observation_type"])
+                for item in self._conn.execute(
+                    """
+                    SELECT e.observation_type
+                    FROM claim_evidence ce
+                    JOIN evidence_items e ON e.evidence_id = ce.evidence_id
+                    WHERE ce.claim_id = ? AND ce.relation = 'SUPPORTS'
+                    """,
+                    (claim_id,),
+                ).fetchall()
+            }
+            if len(evidence_types) == 1:
+                self._conn.execute(
+                    """
+                    UPDATE claims SET observation_type = ?
+                    WHERE claim_id = ? AND observation_type = 'UNKNOWN'
+                    """,
+                    (next(iter(evidence_types)), claim_id),
+                )
 
     @staticmethod
     def _public_id(prefix: str, seq: int) -> str:
