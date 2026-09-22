@@ -28,7 +28,7 @@ from agent_reach.channels.web import WebChannel
 
 from .research import ResearchStore
 from .research_mcp import handle_research_tool, research_tool_specs
-from .video import (ingest_media, register_media_evidence, verification_queries, deep_understand_media, translate_media_manifest, extract_media_text, reason_across_time, build_media_knowledge_graph, evaluate_video_intelligence, detect_topic_boundaries, infer_speaker_turns, probe_media_acquisition)
+from .video import (ingest_media, register_media_evidence, verification_queries, deep_understand_media, translate_media_manifest, extract_media_text, reason_across_time, build_media_knowledge_graph, evaluate_video_intelligence, detect_topic_boundaries, infer_speaker_turns, probe_media_acquisition, extract_media_evidence_bundle)
 
 _MAX_REMOTE_RESPONSE_BYTES = 5 * 1024 * 1024
 _DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -396,6 +396,11 @@ class AhmedToolboxGateway:
                 },
             },
             {
+                "name": "reach_media_handoff",
+                "description": "Extract model-free timestamped media evidence for ChatGPT deep understanding.",
+                "inputSchema": {"type": "object", "required": ["url"], "properties": {"url": {"type": "string"}, "frame_interval_seconds": {"type": "integer", "minimum": 5, "maximum": 300, "default": 15}}, "additionalProperties": False},
+            },
+            {
                 "name": "reach_media_probe",
                 "description": "Test direct public media acquisition (audio/video/frames) without model/API calls.",
                 "inputSchema": {"type": "object", "required": ["url"], "properties": {"url": {"type": "string"}, "include_visual": {"type": "boolean", "default": true}}, "additionalProperties": False},
@@ -639,6 +644,16 @@ class AhmedToolboxGateway:
             except Exception as exc:  # noqa: BLE001
                 return self._text_result(f"Media evidence ingestion failed: {exc}", is_error=True)
             return self._text_result(json.dumps(result, ensure_ascii=False, default=str))
+
+        if name == "reach_media_handoff":
+            url = str(arguments.get("url") or "").strip()
+            if not url:
+                return self._text_result("url is required", is_error=True)
+            try:
+                result = extract_media_evidence_bundle(url, frame_interval_seconds=int(arguments.get("frame_interval_seconds") or 15))
+                return self._text_result(json.dumps(result, ensure_ascii=False))
+            except Exception as exc:  # noqa: BLE001
+                return self._text_result(str(exc), is_error=True)
 
         if name == "reach_media_probe":
             url = str(arguments.get("url") or "").strip()
