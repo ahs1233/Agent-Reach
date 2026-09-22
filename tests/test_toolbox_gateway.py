@@ -146,7 +146,9 @@ def test_unavailable_remote_does_not_remove_local_tools():
 
     names = {tool["name"] for tool in gateway.list_tools()}
 
-    assert names == {"reach_doctor", "reach_web_search", "reach_read_url"}
+    assert {"reach_doctor", "reach_web_search", "reach_read_url"} <= names
+    assert "research_start_run" in names
+    assert "research_export_ledger" in names
 
 
 def test_namespaced_tool_calls_are_forwarded():
