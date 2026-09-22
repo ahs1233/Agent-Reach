@@ -307,7 +307,7 @@ def download_video_for_frames(url: str, out_dir: Path) -> Path:
         fallback = [
             "yt-dlp", "--no-playlist", "--max-filesize", str(MAX_SOURCE_BYTES),
             "--retries", "3", "--fragment-retries", "3",
-            "--extractor-args", "youtube:player_client=mweb",
+            "--extractor-args", "youtube:player_client=mweb;youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416",
             "-f", "bestvideo[height<=720]/best[height<=720]/bestvideo/best",
             "-o", str(template), "--", url,
         ]
