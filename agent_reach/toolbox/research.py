@@ -383,6 +383,17 @@ class ResearchStore:
             FOREIGN KEY(evidence_id) REFERENCES evidence_items(evidence_id),
             FOREIGN KEY(freshness_id) REFERENCES freshness_evaluations(freshness_id)
         );
+
+        CREATE TABLE IF NOT EXISTS output_fragment_source_independence (
+            fragment_id TEXT NOT NULL,
+            claim_id TEXT NOT NULL,
+            independence_id TEXT NOT NULL,
+            PRIMARY KEY(fragment_id, claim_id),
+            FOREIGN KEY(fragment_id) REFERENCES output_fragments(fragment_id) ON DELETE CASCADE,
+            FOREIGN KEY(claim_id) REFERENCES claims(claim_id),
+            FOREIGN KEY(independence_id)
+                REFERENCES source_independence_evaluations(independence_id)
+        );
         """
         with self._lock, self._conn:
             self._conn.executescript(schema)
@@ -1323,6 +1334,29 @@ class ResearchStore:
                         """,
                         (fragment_id, claim_id, claim_position),
                     )
+                    independence_row = self._conn.execute(
+                        """
+                        SELECT independence_id
+                        FROM source_independence_evaluations
+                        WHERE claim_id = ?
+                        ORDER BY seq DESC LIMIT 1
+                        """,
+                        (claim_id,),
+                    ).fetchone()
+                    if independence_row is not None:
+                        self._conn.execute(
+                            """
+                            INSERT INTO output_fragment_source_independence(
+                                fragment_id, claim_id, independence_id
+                            )
+                            VALUES(?, ?, ?)
+                            """,
+                            (
+                                fragment_id,
+                                claim_id,
+                                str(independence_row["independence_id"]),
+                            ),
+                        )
 
                 claim_placeholders = ",".join("?" for _ in claim_ids)
                 evidence_rows = self._conn.execute(
@@ -1395,6 +1429,25 @@ class ResearchStore:
             provenance_refs: list[dict[str, Any]] = []
             for claim_link in claim_rows:
                 claim = self.get_claim(str(claim_link["claim_id"]))
+                with self._lock:
+                    independence_snapshot_row = self._conn.execute(
+                        """
+                        SELECT independence_id
+                        FROM output_fragment_source_independence
+                        WHERE fragment_id = ? AND claim_id = ?
+                        """,
+                        (
+                            fragment_row["fragment_id"],
+                            claim["claim_id"],
+                        ),
+                    ).fetchone()
+                source_independence_at_output = (
+                    self.get_source_independence_evaluation(
+                        str(independence_snapshot_row["independence_id"])
+                    )
+                    if independence_snapshot_row is not None
+                    else None
+                )
                 evidence_refs: list[dict[str, Any]] = []
                 for relation, evidence_ids in (
                     ("SUPPORTS", claim["supporting_evidence_ids"]),
@@ -1468,7 +1521,10 @@ class ResearchStore:
                         "statement": claim["statement"],
                         "classification": claim["classification"],
                         "observation_type": claim["observation_type"],
-                        "source_independence": claim[
+                        "source_independence_at_output": (
+                            source_independence_at_output
+                        ),
+                        "latest_source_independence": claim[
                             "latest_source_independence"
                         ],
                         "evidence": evidence_refs,
