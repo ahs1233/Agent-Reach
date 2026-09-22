@@ -9,7 +9,7 @@ WORKDIR /app
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       python3 python3-venv python3-pip git curl ca-certificates gh \
+       python3 python3-venv python3-pip git curl ca-certificates gh ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m venv /opt/venv
@@ -22,6 +22,18 @@ COPY config ./config
 RUN pip install --no-cache-dir . \
     && npm install -g mcporter@0.13.13
 
+# Install the matching bgutil PO-token runtime in the same container so
+# yt-dlp can reach it over loopback without provisioning a Railway sidecar.
+ARG BGUTIL_POT_VERSION=2.0.0
+RUN git clone --depth 1 --branch "${BGUTIL_POT_VERSION}" https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /opt/bgutil-pot \
+    && cd /opt/bgutil-pot/server \
+    && npm ci \
+    && npx tsc \
+    && npm prune --omit=dev
+
+COPY docker/start-ahmed-toolbox.sh /usr/local/bin/start-ahmed-toolbox
+RUN chmod +x /usr/local/bin/start-ahmed-toolbox
+
 EXPOSE 8765
 
-CMD ["ahmed-toolbox"]
+CMD ["/usr/local/bin/start-ahmed-toolbox"]
