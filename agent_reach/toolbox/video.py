@@ -97,6 +97,99 @@ def extract_claim_candidates(manifest: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 
+
+def _responses_json(prompt: str, *, config: Config, model: str) -> dict[str, Any]:
+    key = config.get("openai_api_key")
+    if not key:
+        raise NoProviderConfigured("openai: missing openai_api_key")
+    response = requests.post(
+        "https://api.openai.com/v1/responses",
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        json={"model": model, "input": prompt, "text": {"format": {"type": "json_object"}}},
+        timeout=120,
+    )
+    if response.status_code >= 400:
+        raise TranscribeError(f"language/reasoning request failed: HTTP {response.status_code}")
+    data = response.json()
+    text = ""
+    for item in data.get("output") or []:
+        for part in item.get("content") or []:
+            if part.get("type") == "output_text":
+                text += str(part.get("text") or "")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise TranscribeError("model returned invalid JSON") from exc
+
+
+def translate_media_manifest(manifest: dict[str, Any], target_language: str, *,
+                             config: Config | None = None,
+                             model: str = "gpt-5.6-luna") -> dict[str, Any]:
+    """Translate transcript segments while preserving source text and timestamps."""
+    cfg = config or Config()
+    translated = []
+    for seg in manifest.get("segments") or []:
+        source = str(seg.get("transcript") or "").strip()
+        if not source:
+            continue
+        result = _responses_json(
+            "Translate the following media transcript faithfully into " + target_language +
+            ". Preserve names, numbers, uncertainty, tone and technical terminology. "
+            "Do not summarize or add facts. Return JSON {translation:string}.\nSOURCE:\n" + source,
+            config=cfg, model=model,
+        )
+        translated.append({
+            "index": seg.get("index"), "start_seconds": seg.get("start_seconds"),
+            "end_seconds": seg.get("end_seconds"), "citation": seg.get("citation"),
+            "source_text": source, "translation": str(result.get("translation") or ""),
+            "target_language": target_language, "model": model,
+        })
+    return {"target_language": target_language, "segments": translated,
+            "full_translation": "\n\n".join(
+                f"[{x['citation']}] {x['translation']}" for x in translated)}
+
+
+def deep_understand_media(manifest: dict[str, Any], *, config: Config | None = None,
+                          model: str = "gpt-5.6-luna") -> dict[str, Any]:
+    """Build a structured semantic model of the media, distinct from fact verification."""
+    cfg = config or Config()
+    transcript = str(manifest.get("full_transcript") or "")[:120000]
+    visual = json.dumps(manifest.get("visual_events") or [], ensure_ascii=False)[:60000]
+    prompt = """Analyze this video/audio deeply as a reasoning artifact, not merely as claims to fact-check.
+Return ONLY JSON with:
+summary, central_thesis, purpose_and_intent, argument_map, key_concepts,
+causal_model, assumptions, evidence_used_by_speaker, counterarguments_or_missing_views,
+contradictions_or_tensions, rhetorical_strategy, uncertainty_and_ambiguity,
+important_entities, numbers_and_dates, implications, open_questions,
+scene_or_topic_structure, strongest_insights, possible_misinterpretations.
+Separate what the source explicitly says from your interpretation. Never infer private mental states.
+Every important point should include supporting media citations/timestamps when possible.
+TRANSCRIPT:
+""" + transcript + "\nVISUAL EVENTS:\n" + visual
+    result = _responses_json(prompt, config=cfg, model=model)
+    result["analysis_model"] = model
+    result["analysis_type"] = "DEEP_SEMANTIC_UNDERSTANDING"
+    result["verification_status"] = "INTERPRETATION_NOT_FACT_VERIFICATION"
+    return result
+
+
+def extract_media_text(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Return speech text and visible/OCR text as separate provenance-preserving streams."""
+    speech = [{"citation": s.get("citation"), "start_seconds": s.get("start_seconds"),
+               "end_seconds": s.get("end_seconds"), "text": s.get("transcript")}
+              for s in manifest.get("segments") or [] if s.get("transcript")]
+    visual = []
+    for event in manifest.get("visual_events") or []:
+        analysis = event.get("analysis") or {}
+        text = str(analysis.get("visible_text") or "").strip()
+        if text:
+            visual.append({"citation": event.get("citation"),
+                           "timestamp_seconds": event.get("timestamp_seconds"),
+                           "frame_sha256": event.get("frame_sha256"), "text": text})
+    return {"speech_text": speech, "visual_text": visual,
+            "plain_transcript": "\n".join(str(x["text"]) for x in speech),
+            "plain_visual_text": "\n".join(str(x["text"]) for x in visual)}
+
 def analyze_visual_frames(frames: list[dict[str, Any]], *, config: Config | None = None,
                           model: str = "gpt-5.6-luna", max_frames: int = 24) -> list[dict[str, Any]]:
     """Analyze sampled keyframes with a multimodal model and return grounded visual evidence."""
