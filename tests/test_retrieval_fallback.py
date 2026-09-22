@@ -178,3 +178,25 @@ def test_remote_json_content_is_unwrapped_before_validation() -> None:
 
     assert result["status"] == "SUCCESS"
     assert result["content"].startswith("needle")
+
+
+
+def test_antibot_error_is_recorded_as_blocked() -> None:
+    calls: list[str] = []
+
+    def caller(name: str, arguments: dict) -> dict:
+        del arguments
+        calls.append(name)
+        if name == "reach_read_url":
+            return _error("Jina Reader 返回了反爬验证页")
+        return _ok("usable " + "q" * 400)
+
+    result = retrieve_with_fallback(
+        "https://example.com/page",
+        call_tool=caller,
+    )
+
+    assert result["status"] == "SUCCESS"
+    assert result["attempts"][0]["status"] == "BLOCKED"
+    assert result["attempts"][0]["reason_code"] == "ANTI_BOT_CHALLENGE"
+    assert result["retrieval_history"][0]["status"] == "BLOCKED"
