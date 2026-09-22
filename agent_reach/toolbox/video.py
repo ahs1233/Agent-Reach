@@ -73,25 +73,40 @@ def probe_media_acquisition(source_url: str, *, include_visual: bool = True) -> 
 
 
 def _extract_keyframes(src: Path, out_dir: Path, interval_seconds: int = 30) -> list[dict[str, Any]]:
-    """Extract bounded keyframes for downstream vision/OCR models."""
+    """Extract bounded frames robustly, including short/odd-timestamp social videos."""
     if interval_seconds < 5 or interval_seconds > 300:
         raise TranscribeError("frame interval must be between 5 and 300 seconds")
     if not shutil.which("ffmpeg"):
         raise TranscribeError("ffmpeg not found in PATH")
     frame_dir = out_dir / "frames"
     frame_dir.mkdir(exist_ok=True)
+    for stale in frame_dir.glob("frame_*.jpg"):
+        stale.unlink()
     pattern = frame_dir / "frame_%05d.jpg"
+
+    # Decode by frame number rather than timestamp first. This guarantees frame 0
+    # for short clips and avoids broken/non-zero social-media timestamps.
+    select_expr = f"select='eq(n\\,0)+gte(t\\,{interval_seconds})'"
     cmd = ["ffmpeg", "-loglevel", "error", "-y", "-i", str(src), "-map", "0:v:0",
-           "-vf", f"fps=fps=1/{interval_seconds}:start_time=0,scale='min(1280,iw)':-2",
+           "-vf", select_expr + ",scale='min(1280,iw)':-2", "-fps_mode", "vfr",
            "-frames:v", "500", "-q:v", "3", str(pattern)]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    if proc.returncode != 0:
-        raise TranscribeError(f"frame extraction failed: {proc.stderr.strip()[:300]}")
+
     frames = sorted(frame_dir.glob("frame_*.jpg"))[:500]
-    return [{"index": i, "timestamp_seconds": float(i * interval_seconds),
+    if not frames:
+        # Hard fallback: decode exactly one first video frame with no temporal filter.
+        first = frame_dir / "frame_00001.jpg"
+        fallback = ["ffmpeg", "-loglevel", "error", "-y", "-i", str(src), "-map", "0:v:0",
+                    "-frames:v", "1", "-q:v", "3", str(first)]
+        fb = subprocess.run(fallback, capture_output=True, text=True, timeout=120)
+        frames = sorted(frame_dir.glob("frame_*.jpg"))[:500]
+        if not frames:
+            detail = (fb.stderr or proc.stderr or "no decodable video frame").strip()[:500]
+            raise TranscribeError(f"frame extraction failed: {detail}")
+
+    return [{"index": i, "timestamp_seconds": 0.0 if i == 0 else float(i * interval_seconds),
              "path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
             for i, p in enumerate(frames)]
-
 
 def build_unified_timeline(segments: list[dict[str, Any]],
                            visual_events: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
