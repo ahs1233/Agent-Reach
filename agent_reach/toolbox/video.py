@@ -173,6 +173,75 @@ TRANSCRIPT:
     return result
 
 
+
+def reason_across_time(manifest: dict[str, Any], understanding: dict[str, Any] | None = None, *,
+                       config: Config | None = None,
+                       model: str = "gpt-5.6-luna") -> dict[str, Any]:
+    """Trace how ideas, claims, entities and contradictions evolve across the full media timeline."""
+    cfg = config or Config()
+    timeline = manifest.get("timeline") or []
+    compact = []
+    for event in timeline[:1000]:
+        compact.append({
+            "kind": event.get("kind"), "t": event.get("timestamp_seconds"),
+            "end": event.get("end_seconds"), "citation": event.get("citation"),
+            "text": event.get("text"), "analysis": event.get("analysis"),
+        })
+    prompt = """Perform longitudinal reasoning over this media timeline.
+Return ONLY JSON with:
+chapters, thesis_evolution, argument_steps, claim_graph, entity_graph,
+causal_links, callbacks_and_dependencies, internal_consistencies,
+internal_contradictions, unresolved_tensions, premise_to_conclusion_paths,
+turning_points, evidence_dependencies, narrative_or_rhetorical_progression,
+cross_time_insights, questions_for_verification.
+Rules:
+- Every node/edge/contradiction must cite one or more media timestamps/citations.
+- Distinguish explicit source statements from analytical inference.
+- A contradiction requires incompatible propositions, not mere topic change.
+- Never infer private mental states or hidden intent.
+- Do not mark external-world claims verified.
+TIMELINE:
+""" + json.dumps(compact, ensure_ascii=False)[:180000]
+    if understanding:
+        prompt += "\nPRIOR SEMANTIC MODEL:\n" + json.dumps(understanding, ensure_ascii=False)[:60000]
+    result = _responses_json(prompt, config=cfg, model=model)
+    result["analysis_type"] = "LONGITUDINAL_MEDIA_REASONING"
+    result["analysis_model"] = model
+    result["verification_status"] = "STRUCTURAL_REASONING_NOT_EXTERNAL_FACT_VERIFICATION"
+    return result
+
+
+def build_media_knowledge_graph(longitudinal: dict[str, Any]) -> dict[str, Any]:
+    """Normalize model graph output into portable nodes/edges with provenance."""
+    nodes: dict[str, dict[str, Any]] = {}
+    edges: list[dict[str, Any]] = []
+    graph = longitudinal.get("claim_graph") or {}
+    raw_nodes = graph.get("nodes") if isinstance(graph, dict) else []
+    raw_edges = graph.get("edges") if isinstance(graph, dict) else []
+    for i, node in enumerate(raw_nodes or []):
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("id") or f"N-{i+1:04d}")
+        nodes[node_id] = {
+            "id": node_id,
+            "type": str(node.get("type") or "claim"),
+            "label": str(node.get("label") or node.get("statement") or ""),
+            "citations": list(node.get("citations") or []),
+            "epistemic_status": str(node.get("epistemic_status") or "SOURCE_OR_INFERENCE"),
+        }
+    for i, edge in enumerate(raw_edges or []):
+        if not isinstance(edge, dict):
+            continue
+        edges.append({
+            "id": str(edge.get("id") or f"EDGE-{i+1:04d}"),
+            "source": str(edge.get("source") or ""),
+            "target": str(edge.get("target") or ""),
+            "relation": str(edge.get("relation") or "RELATED_TO"),
+            "citations": list(edge.get("citations") or []),
+        })
+    return {"nodes": list(nodes.values()), "edges": edges,
+            "node_count": len(nodes), "edge_count": len(edges)}
+
 def extract_media_text(manifest: dict[str, Any]) -> dict[str, Any]:
     """Return speech text and visible/OCR text as separate provenance-preserving streams."""
     speech = [{"citation": s.get("citation"), "start_seconds": s.get("start_seconds"),
