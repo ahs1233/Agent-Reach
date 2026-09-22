@@ -99,20 +99,25 @@ def transcribe_local(path: Path, *, language: Optional[str] = None) -> dict:
     model_name = os.environ.get("AHMED_LOCAL_WHISPER_MODEL", "small").strip() or "small"
     model = WhisperModel(model_name, device="cpu", compute_type="int8")
     segments, info = model.transcribe(
-        str(path), language=(language or None), vad_filter=True, beam_size=5
+        str(path),
+        language=(language or None),
+        vad_filter=True,
+        beam_size=5,
+        word_timestamps=True,
+        condition_on_previous_text=True,
     )
     rows = []
     for seg in segments:
         text = (seg.text or "").strip()
         if text:
-            rows.append({"start_seconds": round(float(seg.start), 3), "end_seconds": round(float(seg.end), 3), "text": text})
+            words = []\n            for word in (getattr(seg, "words", None) or []):\n                token = (getattr(word, "word", "") or "").strip()\n                if token:\n                    words.append({"start_seconds": round(float(word.start), 3), "end_seconds": round(float(word.end), 3), "text": token, "probability": round(float(getattr(word, "probability", 0.0) or 0.0), 4)})\n            rows.append({"start_seconds": round(float(seg.start), 3), "end_seconds": round(float(seg.end), 3), "text": text, "words": words})
     return {
         "provider": "local-faster-whisper",
         "model": model_name,
         "language": getattr(info, "language", language),
         "language_probability": getattr(info, "language_probability", None),
         "text": " ".join(row["text"] for row in rows).strip(),
-        "segments": rows,
+        "segments": rows,\n        "low_confidence_words": [w for row in rows for w in row.get("words", []) if w.get("probability", 1.0) < 0.55],
     }
 
 
