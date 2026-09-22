@@ -8,9 +8,7 @@ proof of independence.
 
 from __future__ import annotations
 
-from itertools import combinations
 from typing import Any
-
 
 DEPENDENCY_RELATIONSHIPS = {
     "DERIVED_FROM",
