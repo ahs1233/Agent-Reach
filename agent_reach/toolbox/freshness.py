@@ -13,7 +13,6 @@ import calendar
 from datetime import date, datetime, time, timezone
 from typing import Any, NamedTuple
 
-
 FRESHNESS_STATUSES = {
     "FRESH",
     "STALE",
