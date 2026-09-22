@@ -23,6 +23,8 @@ ANTI_BOT_MARKERS = (
     "cloudflare",
     "anti-bot",
     "robot check",
+    "反爬",
+    "验证页",
 )
 
 DEFAULT_STAGES: tuple[tuple[str, str, str], ...] = (
@@ -146,13 +148,18 @@ def retrieve_with_fallback(
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         if result.get("isError"):
             detail = _result_text(result)
+            blocked = any(
+                marker in detail.lower() for marker in ANTI_BOT_MARKERS
+            )
             attempts.append(
                 {
                     "state": state,
                     "tool": tool_name,
                     "method": method,
-                    "status": "FAILED",
-                    "reason_code": "TOOL_ERROR",
+                    "status": "BLOCKED" if blocked else "FAILED",
+                    "reason_code": (
+                        "ANTI_BOT_CHALLENGE" if blocked else "TOOL_ERROR"
+                    ),
                     "detail": detail[:1200],
                     "duration_ms": round(elapsed_ms, 3),
                     "content_length": 0,
@@ -191,6 +198,29 @@ def retrieve_with_fallback(
             final_method = method
             break
 
+    retrieval_history = [
+        {
+            "stage": "RETRIEVAL",
+            "tool": attempt["tool"],
+            "method": attempt["method"],
+            "status": attempt["status"],
+            "detail": (
+                attempt["reason_code"]
+                + (
+                    ": " + ", ".join(attempt["missing_terms"])
+                    if attempt["missing_terms"]
+                    else ""
+                )
+                + (
+                    ": " + str(attempt["detail"])
+                    if attempt["detail"]
+                    else ""
+                )
+            )[:1200],
+        }
+        for attempt in attempts
+    ]
+
     if final_tool is not None:
         return {
             "status": "SUCCESS",
@@ -200,6 +230,7 @@ def retrieve_with_fallback(
             "final_tool": final_tool,
             "retrieval_method": final_method,
             "attempts": attempts,
+            "retrieval_history": retrieval_history,
             "escalation_count": max(0, len(attempts) - 1),
             "browser_fallback_configured": bool(browser_tool),
             "browser_required": False,
@@ -214,6 +245,7 @@ def retrieve_with_fallback(
         "final_tool": None,
         "retrieval_method": None,
         "attempts": attempts,
+        "retrieval_history": retrieval_history,
         "escalation_count": max(0, len(attempts) - 1),
         "browser_fallback_configured": bool(browser_tool),
         "browser_required": not bool(browser_tool),
