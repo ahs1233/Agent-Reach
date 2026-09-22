@@ -281,6 +281,54 @@ def download_audio(url: str, out_dir: Path) -> Path:
     return audio
 
 
+
+def download_video_for_frames(url: str, out_dir: Path) -> Path:
+    """Download a bounded visual source for frame extraction.
+
+    This is intentionally separate from download_audio: that path extracts
+    audio only and cannot provide real video frames. Prefer <=720p to avoid
+    wasting bandwidth on analysis frames.
+    """
+    _assert_safe_public_url(url)
+    _require("yt-dlp")
+    template = out_dir / "visual_source.%(ext)s"
+    cmd = [
+        "yt-dlp", "--no-playlist", "--max-filesize", str(MAX_SOURCE_BYTES),
+        "--retries", "3", "--fragment-retries", "3",
+        "-f", "bestvideo[height<=720]/best[height<=720]/bestvideo/best",
+        "-o", str(template), "--", url,
+    ]
+    try:
+        _run(cmd, timeout=1800)
+    except TranscribeError as first_error:
+        host = (urlparse(url if "://" in url else "https://" + url).hostname or "").lower()
+        if host not in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}:
+            raise
+        fallback = [
+            "yt-dlp", "--no-playlist", "--max-filesize", str(MAX_SOURCE_BYTES),
+            "--retries", "3", "--fragment-retries", "3",
+            "--extractor-args", "youtube:player_client=mweb",
+            "-f", "bestvideo[height<=720]/best[height<=720]/bestvideo/best",
+            "-o", str(template), "--", url,
+        ]
+        try:
+            _run(fallback, timeout=1800)
+        except TranscribeError as second_error:
+            raise TranscribeError(
+                "visual video acquisition failed with default and mweb YouTube "
+                f"clients; default={first_error}; mweb={second_error}"
+            ) from second_error
+    files = sorted(out_dir.glob("visual_source.*"))
+    if not files:
+        limit_mib = MAX_SOURCE_BYTES // (1024 * 1024)
+        raise TranscribeError(
+            f"yt-dlp produced no visual source (source may exceed {limit_mib} MiB limit)"
+        )
+    video = files[0]
+    _require_size_at_most(video, MAX_SOURCE_BYTES, "downloaded visual source")
+    return video
+
+
 def compress_audio(src: Path, out_dir: Path) -> Path:
     """Re-encode to mono / 16kHz / 32kbps m4a — keeps most content under 25MB."""
     _require("ffmpeg")
