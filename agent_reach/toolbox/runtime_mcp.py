@@ -354,8 +354,39 @@ def handle_runtime_tool(
         session_id = str(arguments.get("session_id") or new_session_id("delegate"))
         tasks = list(arguments.get("tasks") or [])
         parent_run = None
-        if parent_id and orchestration_store is not None:
+        child_budget_by_id: dict[str, dict[str, int]] = {}
+        if parent_id:
+            if orchestration_store is None:
+                raise ValueError("delegation with orchestration_id requires orchestration store")
             parent_run = orchestration_store.get_run(parent_id)
+            if parent_run.get("status") != "ACTIVE":
+                raise ValueError("parent orchestration run is not active")
+
+            usage = orchestration_store.usage(parent_id)
+            remaining_tools = max(
+                0, int(parent_run["budget"]["tool_calls"]) - int(usage["tool_calls"])
+            )
+            remaining_network = max(
+                0, int(parent_run["budget"]["network_calls"]) - int(usage["network_calls"])
+            )
+            task_count = max(1, len(tasks))
+            for index, task in enumerate(tasks):
+                task_id = str(task.get("id") or f"task_{index + 1}")
+                tool_cap = remaining_tools // task_count + (
+                    1 if index < (remaining_tools % task_count) else 0
+                )
+                network_cap = remaining_network // task_count + (
+                    1 if index < (remaining_network % task_count) else 0
+                )
+                requested = dict(task.get("budget") or {})
+                child_budget_by_id[task_id] = {
+                    "tool_calls": min(
+                        tool_cap, max(0, int(requested.get("tool_calls", tool_cap)))
+                    ),
+                    "network_calls": min(
+                        network_cap, max(0, int(requested.get("network_calls", network_cap)))
+                    ),
+                }
 
         def execute_task(task: dict[str, Any]) -> dict[str, Any]:
             task_id = str(task.get("id") or "task")
@@ -365,10 +396,14 @@ def handle_runtime_tool(
                     str(task.get("objective") or f"delegated:{task_id}"),
                     mode=str(parent_run.get("mode") or "general"),
                     research_run_id=parent_run.get("research_run_id"),
-                    budget=dict(task.get("budget") or {"tool_calls": 20, "network_calls": 10}),
+                    budget=child_budget_by_id[task_id],
                     specialists=parent_run.get("specialists"),
                     max_effect_class=str(parent_run.get("max_effect_class") or "SE1"),
-                    metadata={"parent_orchestration_id": parent_id, "delegation_task_id": task_id},
+                    metadata={
+                        "parent_orchestration_id": parent_id,
+                        "delegation_task_id": task_id,
+                        "budget_allocated_from_parent": True,
+                    },
                 )
                 child_id = child["orchestration_id"]
                 orchestration_store.append_event(
