@@ -329,3 +329,97 @@ def test_full_general_orchestration_lifecycle(tmp_path):
     }))
     assert denied_after_complete["executed"] is False
     assert denied_after_complete["authorization"]["reason"] == "run_not_active"
+
+
+def test_full_research_orchestration_with_real_evidence(tmp_path):
+    research = ResearchStore(str(tmp_path / "research.db"))
+    gateway = AhmedToolboxGateway(
+        agent_reach=FakeReach(),
+        research_store=research,
+        orchestration_store=OrchestrationStore(str(tmp_path / "orch.db")),
+        orchestration_enabled=True,
+    )
+    started = _payload(gateway.call_tool("orchestration_start", {
+        "objective": "prove a research claim through the controlled pipeline",
+        "mode": "research",
+        "budget": {"tool_calls": 10, "network_calls": 0},
+    }))
+    oid = started["orchestration_id"]
+
+    source_exec = _payload(gateway.call_tool("orchestration_execute", {
+        "orchestration_id": oid, "role": "evidence_analyst",
+        "tool_name": "research_record_source",
+        "arguments": {
+            "url": "https://example.com/ecc-proof",
+            "content": "Ahmed Toolbox orchestration requires evidence before synthesis.",
+            "retrieval_tool": "test_fixture",
+            "retrieval_method": "controlled_fixture",
+            "publisher": "Test Fixture",
+            "source_type": "PRIMARY",
+            "primary_source": True,
+        },
+    }))
+    assert source_exec["executed"] is True
+    source = json.loads(source_exec["result"]["content"][0]["text"])
+    source_id = source["source_id"]
+
+    evidence_exec = _payload(gateway.call_tool("orchestration_execute", {
+        "orchestration_id": oid, "role": "evidence_analyst",
+        "tool_name": "research_add_evidence",
+        "arguments": {
+            "source_id": source_id,
+            "supporting_passage": "Ahmed Toolbox orchestration requires evidence before synthesis.",
+            "observation_type": "ACTUAL",
+            "extraction_method": "controlled_test",
+        },
+    }))
+    assert evidence_exec["executed"] is True
+    evidence = json.loads(evidence_exec["result"]["content"][0]["text"])
+    evidence_id = evidence["evidence_id"]
+
+    claim_exec = _payload(gateway.call_tool("orchestration_execute", {
+        "orchestration_id": oid, "role": "evidence_analyst",
+        "tool_name": "research_add_claim",
+        "arguments": {
+            "statement": "The controlled pipeline contains evidence before synthesis.",
+            "classification": "VERIFIED",
+            "supporting_evidence_ids": [evidence_id],
+            "observation_type": "ACTUAL",
+            "confidence": "HIGH",
+            "verification_count": 1,
+        },
+    }))
+    assert claim_exec["executed"] is True
+    claim = json.loads(claim_exec["result"]["content"][0]["text"])
+    claim_id = claim["claim_id"]
+
+    verified = _payload(gateway.call_tool("orchestration_verify", {
+        "orchestration_id": oid,
+    }))
+    assert verified["passed"] is True
+    assert verified["checks"]["research_has_sources"] is True
+    assert verified["checks"]["research_has_evidence"] is True
+    assert verified["checks"]["research_has_claims"] is True
+    assert verified["checks"]["claims_have_evidence"] is True
+    assert verified["checks"]["verified_claims_checked"] is True
+
+    output_exec = _payload(gateway.call_tool("orchestration_execute", {
+        "orchestration_id": oid, "role": "synthesizer",
+        "tool_name": "research_create_output",
+        "arguments": {
+            "consumer_type": "test",
+            "output_type": "text",
+            "fragments": [{
+                "text": "Evidence-backed synthesis.",
+                "claim_ids": [claim_id],
+                "semantic_type": "ACTUAL",
+            }],
+        },
+    }))
+    assert output_exec["executed"] is True
+
+    completed = _payload(gateway.call_tool("orchestration_complete", {
+        "orchestration_id": oid,
+    }))
+    assert completed["completed"] is True
+    assert completed["verification"]["passed"] is True
