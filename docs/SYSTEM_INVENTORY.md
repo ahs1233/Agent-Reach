@@ -56,7 +56,8 @@ Current CI on this SHA:
 | GitHub CLI inside Railway image | binary present | warn | explicit CLI auth not proven | UNTESTED as CLI auth path | Doctor |
 | GitHub connector used by this stabilization | external connector | yes | admin/push verified and commits created | WORKING | connector permission + commits |
 | Railway | external connector | yes | config/deploy/log/metrics read successfully | WORKING | Railway connector |
-| PanWatch integration | yes | `integrations/panwatch/src/platform/marketdata/xau_research_provider.py` | covered by `test_xau_intraday_integration.py`; CI passed | WORKING | code + CI |
+| PanWatch research-data adapter | yes | `integrations/panwatch/src/platform/marketdata/xau_research_provider.py` | Yahoo/GC=F research-data adapter is covered by CI | WORKING | code + CI |
+| PanWatch → Ahmed Toolbox Research/Reach | no explicit canonical adapter found | n/a | no canonical calls to `research_start_run` or `reach_web_search` were found in the PanWatch integration tree | NOT_PRESENT | code inventory |
 | mcporter/Exa config | yes | `config/mcporter.json` | Exa live search succeeded | WORKING | code + live call |
 
 ### Scrapling root cause

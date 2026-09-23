@@ -118,10 +118,10 @@
       "number": 11,
       "category": "data_acquisition",
       "name": "Local STT works if installed/configured.",
-      "tier": "live_integration",
-      "preconditions": "Live dependency and required production/staging credential/configuration available.",
+      "tier": "not_present",
+      "preconditions": "Local Whisper is absent from canonical feat/ahmed-toolbox-mcp production image.",
       "action": "Local STT works if installed/configured.",
-      "expected": "Run in live-integration job and record PASS/FAIL/SKIP honestly.",
+      "expected": "NOT_PRESENT and excluded from regression gate; do not add Local Whisper during stabilization.",
       "evidence": "GoldenResult.actual_result + GoldenResult.evidence + duration_ms"
     },
     {
