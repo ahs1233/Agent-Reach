@@ -49,4 +49,68 @@ then
 fi
 
 echo "Ahmed ToolBox Browser Use CLI/CDP smoke test passed"
+
+if [ -n "${AHMED_TOOLBOX_BROWSER_E2E_URL:-}" ]; then
+  echo "Running Ahmed ToolBox YouTube Browser Use E2E acceptance"
+  python - <<'PY'
+import json
+import os
+
+from agent_reach.toolbox.gateway import AhmedToolboxGateway
+
+url = os.environ["AHMED_TOOLBOX_BROWSER_E2E_URL"]
+gateway = AhmedToolboxGateway.from_environment()
+tool_names = {tool["name"] for tool in gateway.list_tools()}
+if "reach_youtube_browser_inspect" not in tool_names:
+    raise SystemExit("reach_youtube_browser_inspect missing from gateway tool list")
+
+def call(include_comments: bool, timeout_seconds: int) -> dict:
+    result = gateway.call_tool(
+        "reach_youtube_browser_inspect",
+        {
+            "url": url,
+            "include_comments": include_comments,
+            "max_comments": 5,
+            "timeout_seconds": timeout_seconds,
+        },
+    )
+    if result.get("isError"):
+        text = (result.get("content") or [{}])[0].get("text", "unknown tool error")
+        raise SystemExit(text)
+    content = result.get("content") or []
+    if not content or not isinstance(content[0], dict):
+        raise SystemExit("YouTube browser inspection returned no text content")
+    payload = json.loads(content[0].get("text") or "{}")
+    return {
+        "source_url": payload.get("source_url", ""),
+        "resolved_url": payload.get("resolved_url", ""),
+        "title": payload.get("title", ""),
+        "description": payload.get("description", ""),
+        "visible_text": str(payload.get("visible_text", ""))[:3000],
+        "comments": payload.get("comments") or [],
+        "retrieval_tool": payload.get("retrieval_tool", ""),
+        "mode": payload.get("mode", ""),
+    }
+
+without_comments = call(False, 75)
+if not without_comments["title"] or not without_comments["visible_text"]:
+    raise SystemExit("YouTube Browser Use E2E returned empty title or visible text")
+print(
+    "__AHMED_TOOLBOX_YOUTUBE_E2E_NO_COMMENTS__"
+    + json.dumps(without_comments, ensure_ascii=False)
+)
+
+with_comments = call(True, 90)
+if not with_comments["title"] or not with_comments["visible_text"]:
+    raise SystemExit("YouTube Browser Use comments E2E returned empty title or visible text")
+if not with_comments["comments"]:
+    raise SystemExit("YouTube Browser Use E2E loaded no visible comments")
+print(
+    "__AHMED_TOOLBOX_YOUTUBE_E2E_WITH_COMMENTS__"
+    + json.dumps(with_comments, ensure_ascii=False)
+)
+PY
+  echo "Ahmed ToolBox YouTube Browser Use E2E acceptance passed"
+fi
+
 exec ahmed-toolbox

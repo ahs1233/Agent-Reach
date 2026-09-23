@@ -134,6 +134,7 @@ def test_remote_tools_are_namespaced_and_filtered():
     assert "reach_doctor" in names
     assert "reach_read_url" in names
     assert "reach_web_search" in names
+    assert "reach_youtube_browser_inspect" in names
     assert "scrapling__fetch" in names
     assert "scrapling__make_request" not in names
 
@@ -146,7 +147,7 @@ def test_unavailable_remote_does_not_remove_local_tools():
 
     names = {tool["name"] for tool in gateway.list_tools()}
 
-    assert {"reach_doctor", "reach_web_search", "reach_read_url"} <= names
+    assert {"reach_doctor", "reach_web_search", "reach_read_url", "reach_youtube_browser_inspect"} <= names
     assert "research_start_run" not in names
     assert "research_export_ledger" not in names
 

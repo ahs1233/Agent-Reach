@@ -11,6 +11,16 @@ from typing import Any
 from .gateway import AhmedToolboxGateway, RemoteMCPError
 
 _MAX_REQUEST_BYTES = 1024 * 1024
+_SERVER_VERSION = "0.1.1"
+
+
+def _initialize_result(params: dict[str, Any]) -> dict[str, Any]:
+    """Build MCP initialize metadata for clients that cache tool schemas."""
+    return {
+        "protocolVersion": params.get("protocolVersion") or "2024-11-05",
+        "capabilities": {"tools": {"listChanged": True}},
+        "serverInfo": {"name": "Ahmed ToolBox", "version": _SERVER_VERSION},
+    }
 
 
 def _rpc_result(req_id: Any, result: Any) -> dict[str, Any]:
@@ -29,7 +39,7 @@ class ToolboxRequestHandler(BaseHTTPRequestHandler):
     gateway: AhmedToolboxGateway
     auth_token: str = ""
 
-    server_version = "AhmedToolbox/0.1"
+    server_version = f"AhmedToolbox/{_SERVER_VERSION}"
 
     def log_message(self, fmt: str, *args: object) -> None:
         # Keep the gateway quiet by default; host process logging can wrap it.
@@ -49,6 +59,7 @@ class ToolboxRequestHandler(BaseHTTPRequestHandler):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -96,12 +107,7 @@ class ToolboxRequestHandler(BaseHTTPRequestHandler):
 
         try:
             if method == "initialize":
-                result = {
-                    "protocolVersion": params.get("protocolVersion") or "2024-11-05",
-                    "capabilities": {"tools": {"listChanged": False}},
-                    "serverInfo": {"name": "Ahmed ToolBox", "version": "0.1.0"},
-                }
-                self._send_json(200, _rpc_result(req_id, result))
+                self._send_json(200, _rpc_result(req_id, _initialize_result(params)))
                 return
             if method == "ping":
                 self._send_json(200, _rpc_result(req_id, {}))
