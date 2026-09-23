@@ -40,11 +40,13 @@ jobs:
       - name: Syntax
         run: |
           python -m compileall -q agent_reach integrations/panwatch
+          python -m py_compile scripts/dual-temporal-live-acceptance.py
           sh -n scripts/start-ahmed-toolbox.sh
 
       - name: Ruff
         run: |
           ruff check agent_reach/toolbox
+          ruff check scripts/dual-temporal-live-acceptance.py
           ruff check tests/test_toolbox_gateway.py tests/test_toolbox_orchestration.py tests/test_toolbox_runtime.py tests/test_toolbox_subagent.py tests/test_runtime_trust_gate.py tests/test_toolbox_browser_use.py tests/test_xau_intraday_integration.py tests/test_toolbox_ace.py
           ruff check tests/test_research_dual_temporal.py tests/test_dual_temporal_gateway.py tests/test_retrieval_fallback.py
 
