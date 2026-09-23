@@ -232,6 +232,15 @@ class RuntimeStore:
                   created_at TEXT NOT NULL,
                   PRIMARY KEY(name, revision)
                 );
+                CREATE TABLE IF NOT EXISTS runtime_skill_outcomes (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  name TEXT NOT NULL,
+                  revision INTEGER NOT NULL,
+                  success INTEGER NOT NULL,
+                  occurred_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_runtime_skill_outcomes
+                  ON runtime_skill_outcomes(name, revision, id);
                 """
             )
             try:
@@ -441,9 +450,11 @@ class RuntimeStore:
                 return self.get_skill(name)
             revision = int(row["revision"] + 1) if row else 1
             created_at = row["created_at"] if row else now
-            successes = int(row["successes"]) if row else 0
-            failures = int(row["failures"]) if row else 0
-            score = float(row["score"]) if row else 0.5
+            # A changed procedure is a new experiment. Never let a fresh revision
+            # inherit the previous revision's success history.
+            successes = 0
+            failures = 0
+            score = 0.5
             conn.execute(
                 """INSERT INTO runtime_skills
                 (name,description,workflow_json,revision,successes,failures,score,source,metadata_json,created_at,updated_at)
@@ -470,6 +481,20 @@ class RuntimeStore:
         item = dict(row)
         item["workflow"] = _json(item.pop("workflow_json"), [])
         item["metadata"] = _json(item.pop("metadata_json"), {})
+        with self._connect() as conn:
+            outcomes = conn.execute(
+                "SELECT revision,success,occurred_at FROM runtime_skill_outcomes "
+                "WHERE name=? ORDER BY id DESC LIMIT 20",
+                (name,),
+            ).fetchall()
+        item["recent_outcomes"] = [
+            {
+                "revision": int(row["revision"]),
+                "success": bool(row["success"]),
+                "occurred_at": row["occurred_at"],
+            }
+            for row in outcomes
+        ]
         return item
 
     def list_skills(self, limit: int = 50) -> list[dict[str, Any]]:
@@ -485,18 +510,58 @@ class RuntimeStore:
     def record_skill_outcome(self, name: str, success: bool) -> dict[str, Any]:
         with self._lock, self._connect() as conn:
             row = conn.execute(
-                "SELECT successes,failures FROM runtime_skills WHERE name=?", (name,)
+                "SELECT revision,successes,failures FROM runtime_skills WHERE name=?", (name,)
             ).fetchone()
             if not row:
                 raise ValueError("unknown skill")
             successes = int(row["successes"]) + (1 if success else 0)
             failures = int(row["failures"]) + (0 if success else 1)
             score = (successes + 1.0) / (successes + failures + 2.0)
+            occurred_at = _now()
             conn.execute(
                 "UPDATE runtime_skills SET successes=?,failures=?,score=?,updated_at=? WHERE name=?",
-                (successes, failures, score, _now(), name),
+                (successes, failures, score, occurred_at, name),
+            )
+            conn.execute(
+                "INSERT INTO runtime_skill_outcomes(name,revision,success,occurred_at) "
+                "VALUES (?,?,?,?)",
+                (name, int(row["revision"]), 1 if success else 0, occurred_at),
             )
         return self.get_skill(name)
+
+    def rollback_skill(self, name: str, revision: int | None = None) -> dict[str, Any]:
+        current = self.get_skill(name)
+        with self._connect() as conn:
+            if revision is None:
+                row = conn.execute(
+                    "SELECT revision,description,workflow_json FROM runtime_skill_versions "
+                    "WHERE name=? AND revision<? ORDER BY revision DESC LIMIT 1",
+                    (name, int(current["revision"])),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT revision,description,workflow_json FROM runtime_skill_versions "
+                    "WHERE name=? AND revision=?",
+                    (name, int(revision)),
+                ).fetchone()
+        if not row:
+            raise ValueError("no matching earlier skill revision")
+        workflow = _json(row["workflow_json"], [])
+        return self.save_skill(
+            name,
+            str(row["description"]),
+            workflow,
+            source="rollback",
+            metadata={
+                **dict(current.get("metadata") or {}),
+                "rolled_back_from_revision": int(current["revision"]),
+                "rolled_back_to_revision": int(row["revision"]),
+            },
+            change_note=(
+                f"Rollback from revision {current['revision']} "
+                f"to revision {row['revision']}"
+            ),
+        )
 
 
 def execute_workflow(
