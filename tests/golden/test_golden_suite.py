@@ -16,11 +16,10 @@ from agent_reach.toolbox.gateway import AhmedToolboxGateway, RemoteMCPError
 from agent_reach.toolbox.orchestration import OrchestrationStore
 from agent_reach.toolbox.research import ResearchStore
 from agent_reach.toolbox.retrieval import retrieve_with_fallback
-from agent_reach.toolbox.server import ToolboxRequestHandler
 from agent_reach.toolbox.runtime import RuntimeStore
+from agent_reach.toolbox.server import ToolboxRequestHandler
 
 from .framework import load_cases, run_case
-
 
 CASES = load_cases()
 DETERMINISTIC = [item for item in CASES if item["tier"] == "deterministic_core"]
