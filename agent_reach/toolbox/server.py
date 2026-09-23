@@ -146,7 +146,14 @@ class ToolboxRequestHandler(BaseHTTPRequestHandler):
                     return
                 self._send_json(
                     200,
-                    _rpc_result(req_id, self.gateway.call_tool(name, arguments)),
+                    _rpc_result(
+                        req_id,
+                        self.gateway.call_tool(
+                            name,
+                            arguments,
+                            request_id=req_id,
+                        ),
+                    ),
                 )
                 return
         except RemoteMCPError as exc:
