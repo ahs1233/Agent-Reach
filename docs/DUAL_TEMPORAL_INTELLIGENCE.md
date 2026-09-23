@@ -112,7 +112,7 @@ original URL
 -> reach_read_url / Jina
 -> Scrapling fetch
 -> Scrapling stealthy
--> optional configured read-only browser adapter
+-> native bounded Browser Use read
 -> targeted search discovery
 ```
 
@@ -124,8 +124,9 @@ result is `ALTERNATIVE_DISCOVERED`, not SUCCESS. Alternative search output is
 never impersonated as content from the blocked URL; the alternative must be
 retrieved and recorded as its own SourceRecord.
 
-Browser fallback remains allowlisted/configured instead of exposing an
-unrestricted arbitrary browser, preserving the existing trust boundary.
+Browser fallback uses the native bounded public-page reader. It rejects
+localhost/private-network targets and remains read-only, preserving the
+existing trust boundary instead of exposing an unrestricted browser agent.
 
 ## Semantic and independence guardrails
 
@@ -134,7 +135,9 @@ cannot be promoted to FORECAST or arbitrary MIXED output by Temporal Fusion.
 
 Source Independence remains authoritative: two URLs are not automatically two
 independent sources; mirrors, syndication, derived sources, source families,
-and explicit independence relationships still control lineage.
+and explicit independence relationships still control lineage. Every persisted
+Temporal Fusion carries a conservative source-lineage assessment so cross-time
+fusion cannot silently turn URL count into independent confirmation.
 
 ## Performance
 
