@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Any
 
 ToolCaller = Callable[[str, dict[str, Any]], dict[str, Any]]
@@ -38,6 +39,8 @@ ANTI_BOT_MARKERS = (
     "反爬",
     "验证页",
 )
+
+MAX_RETRIEVAL_ATTEMPTS = 5
 
 DEFAULT_STAGES: tuple[tuple[str, str, str], ...] = (
     ("JINA", "reach_read_url", "jina_reader"),
@@ -134,7 +137,16 @@ def retrieve_with_fallback(
     final_tool = None
     final_method = None
 
-    for state, tool_name, method in stages:
+    if len(stages) + (1 if discovery_tool else 0) > MAX_RETRIEVAL_ATTEMPTS:
+        raise ValueError("retrieval fallback exceeds hard attempt limit")
+
+    for attempt_index, (state, tool_name, method) in enumerate(stages, start=1):
+        next_backend = (
+            stages[attempt_index][1]
+            if attempt_index < len(stages)
+            else (str(discovery_tool) if discovery_tool else None)
+        )
+        attempt_started_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         args: dict[str, Any] = {"url": target}
         if tool_name == "reach_read_url":
             args["max_chars"] = max_chars
@@ -146,6 +158,8 @@ def retrieve_with_fallback(
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             attempts.append(
                 {
+                    "attempt_index": attempt_index,
+                    "started_at": attempt_started_at,
                     "state": state,
                     "tool": tool_name,
                     "method": method,
@@ -155,6 +169,7 @@ def retrieve_with_fallback(
                     "duration_ms": round(elapsed_ms, 3),
                     "content_length": 0,
                     "missing_terms": [],
+                    "next_backend": next_backend,
                 }
             )
             continue
@@ -170,6 +185,8 @@ def retrieve_with_fallback(
             )
             attempts.append(
                 {
+                    "attempt_index": attempt_index,
+                    "started_at": attempt_started_at,
                     "state": state,
                     "tool": tool_name,
                     "method": method,
@@ -185,6 +202,7 @@ def retrieve_with_fallback(
                     "duration_ms": round(elapsed_ms, 3),
                     "content_length": 0,
                     "missing_terms": [],
+                    "next_backend": next_backend,
                 }
             )
             continue
@@ -201,6 +219,8 @@ def retrieve_with_fallback(
         )
         attempts.append(
             {
+                "attempt_index": attempt_index,
+                "started_at": attempt_started_at,
                 "state": state,
                 "tool": tool_name,
                 "method": method,
@@ -210,6 +230,7 @@ def retrieve_with_fallback(
                 "duration_ms": round(elapsed_ms, 3),
                 "content_length": len(text),
                 "missing_terms": missing,
+                "next_backend": next_backend,
             }
         )
 
@@ -234,6 +255,8 @@ def retrieve_with_fallback(
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             attempts.append(
                 {
+                    "attempt_index": len(attempts) + 1,
+                    "started_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
                     "state": "TARGETED_SEARCH",
                     "tool": str(discovery_tool),
                     "method": "targeted_search",
@@ -243,6 +266,7 @@ def retrieve_with_fallback(
                     "duration_ms": round(elapsed_ms, 3),
                     "content_length": 0,
                     "missing_terms": [],
+                    "next_backend": next_backend,
                 }
             )
         else:
@@ -332,6 +356,8 @@ def retrieve_with_fallback(
             "attempts": attempts,
             "retrieval_history": retrieval_history,
             "escalation_count": max(0, len(attempts) - 1),
+            "max_attempts": MAX_RETRIEVAL_ATTEMPTS,
+            "retry_policy": "fail-fast-per-backend",
             "browser_fallback_configured": bool(browser_tool),
             "browser_required": False,
             "alternative_discovery": "",
@@ -348,6 +374,8 @@ def retrieve_with_fallback(
             "attempts": attempts,
             "retrieval_history": retrieval_history,
             "escalation_count": max(0, len(attempts) - 1),
+            "max_attempts": MAX_RETRIEVAL_ATTEMPTS,
+            "retry_policy": "fail-fast-per-backend",
             "browser_fallback_configured": bool(browser_tool),
             "browser_required": False,
             "reason_code": "ORIGINAL_SOURCE_UNAVAILABLE_ALTERNATIVES_DISCOVERED",
