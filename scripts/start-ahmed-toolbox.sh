@@ -68,6 +68,7 @@ case "${AHMED_RUNTIME_ENABLED:-0}:${AHMED_ORCHESTRATION_ENABLED:-0}" in
     python - <<'PY'
 import json
 import os
+import sys
 
 from agent_reach.toolbox.gateway import AhmedToolboxGateway
 
