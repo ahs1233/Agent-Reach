@@ -99,6 +99,42 @@ def _bounded_int(value: int, *, minimum: int, maximum: int, name: str) -> int:
 
 def _build_script(url: str, *, include_comments: bool, max_comments: int) -> str:
     safe_url = json.dumps(url, ensure_ascii=False)
+    title_js = repr(
+        """(() => {
+  const details = window.ytInitialPlayerResponse?.videoDetails;
+  return details?.title
+    || document.querySelector('meta[property="og:title"]')?.content
+    || document.title
+    || '';
+})()"""
+    )
+    description_js = repr(
+        """(() => {
+  const details = window.ytInitialPlayerResponse?.videoDetails;
+  return details?.shortDescription
+    || document.querySelector('meta[name="description"]')?.content
+    || document.querySelector('meta[property="og:description"]')?.content
+    || document.querySelector('#description-inline-expander')?.innerText
+    || document.querySelector('#description')?.innerText
+    || '';
+})()"""
+    )
+    visible_text_js = repr(
+        """(() => {
+  const body = (document.body?.innerText || '').trim();
+  const focused = [
+    document.querySelector('ytd-watch-metadata')?.innerText,
+    document.querySelector('#above-the-fold')?.innerText,
+    document.querySelector('#description-inline-expander')?.innerText,
+    document.querySelector('#description')?.innerText
+  ].filter(Boolean).join('\\n');
+  const details = window.ytInitialPlayerResponse?.videoDetails;
+  const fallback = [details?.title, details?.shortDescription].filter(Boolean).join('\\n');
+  const combined = [body, focused, fallback].filter(Boolean).join('\\n');
+  return combined.slice(0, 30000);
+})()"""
+    )
+
     comment_block = "comments = []"
     if include_comments:
         comment_block = f"""
@@ -122,35 +158,9 @@ wait_for_element("ytd-watch-flexy, ytd-watch-metadata", timeout=12)
 wait(3)
 resolved_url = js("location.href || ''") or {safe_url}
 {comment_block}
-title = js(""" + '"""' + """(() => {{
-  const details = window.ytInitialPlayerResponse?.videoDetails;
-  return details?.title
-    || document.querySelector('meta[property="og:title"]')?.content
-    || document.title
-    || '';
-}})()""" + '"""' + """) or ''
-description = js(""" + '"""' + """(() => {{
-  const details = window.ytInitialPlayerResponse?.videoDetails;
-  return details?.shortDescription
-    || document.querySelector('meta[name="description"]')?.content
-    || document.querySelector('meta[property="og:description"]')?.content
-    || document.querySelector('#description-inline-expander')?.innerText
-    || document.querySelector('#description')?.innerText
-    || '';
-}})()""" + '"""' + """) or ''
-visible_text = js(""" + '"""' + """(() => {{
-  const body = (document.body?.innerText || '').trim();
-  const focused = [
-    document.querySelector('ytd-watch-metadata')?.innerText,
-    document.querySelector('#above-the-fold')?.innerText,
-    document.querySelector('#description-inline-expander')?.innerText,
-    document.querySelector('#description')?.innerText
-  ].filter(Boolean).join('\n');
-  const details = window.ytInitialPlayerResponse?.videoDetails;
-  const fallback = [details?.title, details?.shortDescription].filter(Boolean).join('\n');
-  const combined = [body, focused, fallback].filter(Boolean).join('\n');
-  return combined.slice(0, 30000);
-}})()""" + '"""' + """) or ''
+title = js({{title_js}}) or ''
+description = js({{description_js}}) or ''
+visible_text = js({{visible_text_js}}) or ''
 payload = {{
     'resolved_url': resolved_url,
     'title': title,
@@ -160,6 +170,7 @@ payload = {{
 }}
 print({_RESULT_MARKER!r} + json.dumps(payload, ensure_ascii=False))
 """.strip() + "\n"
+
 
 def _validate_rendered_youtube_page(payload: dict[str, Any], source_url: str) -> str:
     """Reject redirects/interstitials so blocked pages cannot masquerade as evidence."""
