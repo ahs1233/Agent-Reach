@@ -35,9 +35,12 @@ def test_inspection_parses_structured_output(monkeypatch):
 
     def fake_run(command, **kwargs):
         assert command == ["/usr/bin/browser-use"]
-        assert "new_tab" in kwargs["input"]
+        assert "goto_url" in kwargs["input"]
+        assert "new_tab" not in kwargs["input"]
+        assert "wait_for_element" in kwargs["input"]
+        assert "ytInitialPlayerResponse" in kwargs["input"]
         assert "ytd-comment-thread-renderer" in kwargs["input"]
-        assert "window.scrollTo" in kwargs["input"]
+        assert "window.scrollBy" in kwargs["input"]
         assert "\nscroll(" not in kwargs["input"]
         return subprocess.CompletedProcess(
             command,
@@ -120,3 +123,30 @@ def test_unexpected_rendered_host_is_error(monkeypatch):
     )
     with pytest.raises(browser_use.BrowserUseError, match="allowed YouTube origin"):
         browser_use.inspect_youtube_page("https://www.youtube.com/watch?v=abc")
+
+
+def test_script_uses_embedded_video_metadata_fallback():
+    script = browser_use._build_script(
+        "https://www.youtube.com/watch?v=abc",
+        include_comments=False,
+        max_comments=0,
+    )
+
+    assert "goto_url" in script
+    assert "wait_for_element" in script
+    assert "videoDetails" in script
+    assert "shortDescription" in script
+    assert "meta[name=\"description\"]" in script
+
+
+def test_comment_script_retries_lazy_loading():
+    script = browser_use._build_script(
+        "https://www.youtube.com/watch?v=abc",
+        include_comments=True,
+        max_comments=5,
+    )
+
+    assert "for _ in range(6)" in script
+    assert "scrollIntoView" in script
+    assert "window.scrollBy" in script
+    assert "ytd-comment-thread-renderer #content-text" in script

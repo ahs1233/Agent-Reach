@@ -101,28 +101,56 @@ def _build_script(url: str, *, include_comments: bool, max_comments: int) -> str
     safe_url = json.dumps(url, ensure_ascii=False)
     comment_block = "comments = []"
     if include_comments:
-        allowed_hosts = json.dumps(sorted(_ALLOWED_YOUTUBE_HOSTS))
         comment_block = f"""
-import time
 comments = []
-host = (js("location.hostname || ''") or '').lower()
-if host in {allowed_hosts}:
-    js("window.scrollTo(0, Math.max(document.body.scrollHeight, 7000)); true")
-    time.sleep(2)
-    js("document.querySelector('ytd-comments#comments, #comments')?.scrollIntoView({{block: 'start'}}); true")
-    time.sleep(2)
+js("document.querySelector('ytd-comments#comments, #comments')?.scrollIntoView({{block: 'start'}}); true")
+wait(2)
+for _ in range(6):
     comments = js("Array.from(document.querySelectorAll('ytd-comment-thread-renderer #content-text')).slice(0, {max_comments}).map(e => e.innerText || '')") or []
+    if comments:
+        break
+    js("window.scrollBy(0, 1200); true")
+    wait(2)
 """.strip()
 
     return f"""
 import json
-new_tab({safe_url})
-wait_for_load()
-title = js("document.title || ''") or ''
+ensure_real_tab()
+goto_url({safe_url})
+wait_for_load(timeout=20)
+wait_for_element("ytd-watch-flexy, ytd-watch-metadata", timeout=12)
+wait(3)
 resolved_url = js("location.href || ''") or {safe_url}
-description = js("(document.querySelector('#description-inline-expander') || document.querySelector('#description'))?.innerText || ''") or ''
-visible_text = js("document.body ? document.body.innerText.slice(0, 30000) : ''") or ''
 {comment_block}
+title = js(""" + '"""' + """(() => {{
+  const details = window.ytInitialPlayerResponse?.videoDetails;
+  return details?.title
+    || document.querySelector('meta[property="og:title"]')?.content
+    || document.title
+    || '';
+}})()""" + '"""' + """) or ''
+description = js(""" + '"""' + """(() => {{
+  const details = window.ytInitialPlayerResponse?.videoDetails;
+  return details?.shortDescription
+    || document.querySelector('meta[name="description"]')?.content
+    || document.querySelector('meta[property="og:description"]')?.content
+    || document.querySelector('#description-inline-expander')?.innerText
+    || document.querySelector('#description')?.innerText
+    || '';
+}})()""" + '"""' + """) or ''
+visible_text = js(""" + '"""' + """(() => {{
+  const body = (document.body?.innerText || '').trim();
+  const focused = [
+    document.querySelector('ytd-watch-metadata')?.innerText,
+    document.querySelector('#above-the-fold')?.innerText,
+    document.querySelector('#description-inline-expander')?.innerText,
+    document.querySelector('#description')?.innerText
+  ].filter(Boolean).join('\n');
+  const details = window.ytInitialPlayerResponse?.videoDetails;
+  const fallback = [details?.title, details?.shortDescription].filter(Boolean).join('\n');
+  const combined = [body, focused, fallback].filter(Boolean).join('\n');
+  return combined.slice(0, 30000);
+}})()""" + '"""' + """) or ''
 payload = {{
     'resolved_url': resolved_url,
     'title': title,
@@ -132,7 +160,6 @@ payload = {{
 }}
 print({_RESULT_MARKER!r} + json.dumps(payload, ensure_ascii=False))
 """.strip() + "\n"
-
 
 def _validate_rendered_youtube_page(payload: dict[str, Any], source_url: str) -> str:
     """Reject redirects/interstitials so blocked pages cannot masquerade as evidence."""
