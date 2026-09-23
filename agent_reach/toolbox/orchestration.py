@@ -64,7 +64,7 @@ def _rank(effect: str) -> int:
 
 
 def classify_tool_effect(name: str) -> str | None:
-    if name in {"reach_doctor", "reach_web_search", "reach_read_url", "reach_retrieve_url"}:
+    if name in {"reach_doctor", "reach_web_search", "reach_read_url", "reach_retrieve_url", "reach_youtube_browser_inspect"}:
         return "SE0"
     if name == "reach_media_ingest" or name.startswith("research_"):
         return "SE1"
@@ -205,7 +205,7 @@ class OrchestrationStore:
         allowed = [e for e in events if e["event_type"] == "TOOL_ALLOWED"]
         return {"tool_calls": len(allowed), "network_calls": sum(e["tool_name"] in NETWORK_TOOLS for e in allowed)}
 
-    def authorize_tool(self, orchestration_id: str, role: str, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def authorize_tool(self, orchestration_id: str, role: str, tool_name: str, arguments: dict[str, Any],\n                       effect_class: str | None = None) -> dict[str, Any]:
         run = self.get_run(orchestration_id)
         reason = None
         effect = classify_tool_effect(tool_name)
