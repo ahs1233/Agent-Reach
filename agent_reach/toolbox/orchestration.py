@@ -238,10 +238,39 @@ class OrchestrationStore:
 
     def record_result(self, orchestration_id: str, authorization_event_id: int, role: str,
                       tool_name: str, result: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            authorization = conn.execute(
+                """SELECT id, role, tool_name FROM orchestration_events
+                WHERE id=? AND orchestration_id=? AND event_type='TOOL_ALLOWED'""",
+                (authorization_event_id, orchestration_id),
+            ).fetchone()
+            duplicate = conn.execute(
+                """SELECT 1 FROM orchestration_events
+                WHERE orchestration_id=? AND event_type='TOOL_RESULT'
+                AND json_extract(payload_json, '$.authorization_event_id')=? LIMIT 1""",
+                (orchestration_id, authorization_event_id),
+            ).fetchone()
+        if not authorization:
+            raise ValueError("result requires a matching TOOL_ALLOWED authorization")
+        if authorization["role"] != role or authorization["tool_name"] != tool_name:
+            raise ValueError("result does not match authorized role/tool")
+        if duplicate:
+            raise ValueError("authorization already has a recorded result")
         self.append_event(orchestration_id, "TOOL_RESULT", role=role, tool_name=tool_name,
                           effect_class=classify_tool_effect(tool_name),
                           payload={"authorization_event_id": authorization_event_id,
                                    "result_hash": _hash(result), "is_error": bool(result.get("isError"))})
+
+    def unresolved_authorizations(self, orchestration_id: str) -> list[int]:
+        events = self.list_events(orchestration_id)
+        allowed = {e["id"] for e in events if e["event_type"] == "TOOL_ALLOWED"}
+        resolved = {
+            int(e["payload"]["authorization_event_id"])
+            for e in events
+            if e["event_type"] == "TOOL_RESULT"
+            and e["payload"].get("authorization_event_id") is not None
+        }
+        return sorted(allowed - resolved)
 
     def verify_journal(self, orchestration_id: str) -> dict[str, Any]:
         previous = GENESIS_HASH
@@ -274,6 +303,7 @@ def build_verification_report(store: OrchestrationStore, orchestration_id: str,
         "journal_integrity": status["journal"]["passed"],
         "tool_budget": status["usage"]["tool_calls"] <= run["budget"]["tool_calls"],
         "network_budget": status["usage"]["network_calls"] <= run["budget"]["network_calls"],
+        "all_authorizations_resolved": not store.unresolved_authorizations(orchestration_id),
     }
     research = None
     if run["mode"] == "research":
