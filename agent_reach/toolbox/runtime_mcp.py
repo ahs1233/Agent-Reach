@@ -352,7 +352,20 @@ def handle_runtime_tool(
             str(arguments.get("orchestration_id")) if arguments.get("orchestration_id") else None
         )
         session_id = str(arguments.get("session_id") or new_session_id("delegate"))
-        tasks = list(arguments.get("tasks") or [])
+        raw_tasks = list(arguments.get("tasks") or [])
+        tasks: list[dict[str, Any]] = []
+        seen_task_ids: set[str] = set()
+        for index, raw_task in enumerate(raw_tasks):
+            if not isinstance(raw_task, dict):
+                raise ValueError(f"delegation task {index} must be an object")
+            task = dict(raw_task)
+            task_id = str(task.get("id") or f"task_{index + 1}")
+            if task_id in seen_task_ids:
+                raise ValueError(f"duplicate delegation task id: {task_id}")
+            seen_task_ids.add(task_id)
+            task["id"] = task_id
+            tasks.append(task)
+
         parent_run = None
         child_budget_by_id: dict[str, dict[str, int]] = {}
         if parent_id:
