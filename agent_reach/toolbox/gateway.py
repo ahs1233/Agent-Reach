@@ -350,6 +350,17 @@ class AhmedToolboxGateway:
             if self.orchestration_enabled
             else None
         )
+        requested_runtime = (
+            _env_flag("AHMED_RUNTIME_ENABLED", False)
+            if runtime_enabled is None
+            else bool(runtime_enabled)
+        )
+        self.runtime_enabled = requested_runtime or self.orchestration_enabled
+        self.runtime_store = (
+            runtime_store or RuntimeStore.from_environment()
+            if self.runtime_enabled
+            else None
+        )
 
     @classmethod
     def from_environment(cls) -> "AhmedToolboxGateway":
