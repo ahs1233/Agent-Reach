@@ -74,16 +74,28 @@ def runtime_tool_specs() -> list[dict[str, Any]]:
                         "maxItems": 12,
                         "items": {
                             "type": "object",
-                            "required": ["steps"],
                             "properties": {
                                 "id": {"type": "string", "maxLength": 80},
                                 "objective": {"type": "string", "maxLength": 2000},
+                                "goal": {"type": "string", "minLength": 1, "maxLength": 12000},
+                                "role": {"type": "string", "minLength": 1, "maxLength": 80},
+                                "context": {"type": "string", "maxLength": 12000},
+                                "tool_allowlist": {
+                                    "type": "array",
+                                    "maxItems": 80,
+                                    "items": {"type": "string", "minLength": 1, "maxLength": 200},
+                                },
+                                "max_turns": {"type": "integer", "minimum": 1, "maximum": 20},
                                 "steps": {"type": "array", "minItems": 1, "maxItems": 50, "items": step_schema},
                                 "budget": {"type": "object"},
                                 "max_parallel": {"type": "integer", "minimum": 1, "maximum": 8},
                                 "timeout_seconds": {"type": "number", "minimum": 1, "maximum": 900},
                                 "fail_fast": {"type": "boolean"},
                             },
+                            "anyOf": [
+                                {"required": ["steps"]},
+                                {"required": ["goal"]},
+                            ],
                             "additionalProperties": False,
                         },
                     },
@@ -196,6 +208,8 @@ def handle_runtime_tool(
     arguments: dict[str, Any],
     *,
     execute_step: Callable[[str, dict[str, Any], str, str | None], dict[str, Any]] | None = None,
+    execute_agent: Callable[[dict[str, Any], str], dict[str, Any]] | None = None,
+    agent_status: dict[str, Any] | None = None,
     orchestration_store: OrchestrationStore | None = None,
 ) -> dict[str, Any] | None:
     if not name.startswith("runtime_"):
@@ -209,12 +223,14 @@ def handle_runtime_tool(
                 "workflow_dag": True,
                 "parallel_tool_rpc": True,
                 "delegation": True,
+                "model_subagents": bool((agent_status or {}).get("available")),
                 "durable_memory": True,
                 "session_search": True,
                 "versioned_skills": True,
                 "skill_outcome_learning": True,
                 "fts5": bool(store._fts_enabled),
             },
+            "model_subagent": agent_status or {"available": False},
         }
 
     if name == "runtime_memory_put":
@@ -424,13 +440,25 @@ def handle_runtime_tool(
                     "SUBAGENT_SPAWNED",
                     payload={"task_id": task_id, "child_orchestration_id": child_id},
                 )
-            outcome = run_workflow(
-                list(task.get("steps") or []),
-                orchestration_id=child_id or parent_id,
-                max_parallel=int(task.get("max_parallel") or 3),
-                timeout_seconds=float(task.get("timeout_seconds") or 180),
-                fail_fast=bool(task.get("fail_fast", True)),
-            )
+            if task.get("goal"):
+                if child_id is None:
+                    raise ValueError(
+                        "model-backed delegated tasks require a parent orchestration_id"
+                    )
+                if execute_agent is None:
+                    raise ValueError("model-backed subagent runner is not configured")
+                outcome = execute_agent(task, child_id)
+            else:
+                steps = list(task.get("steps") or [])
+                if not steps:
+                    raise ValueError("delegation task requires steps or goal")
+                outcome = run_workflow(
+                    steps,
+                    orchestration_id=child_id or parent_id,
+                    max_parallel=int(task.get("max_parallel") or 3),
+                    timeout_seconds=float(task.get("timeout_seconds") or 180),
+                    fail_fast=bool(task.get("fail_fast", True)),
+                )
             if child_id and orchestration_store is not None:
                 unresolved = orchestration_store.unresolved_authorizations(child_id)
                 if not unresolved:
