@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,6 +31,7 @@ from agent_reach.channels.web import WebChannel
 from .ace import ACEStore
 from .ace_mcp import ace_tool_specs, handle_ace_tool
 from .browser_use import inspect_youtube_page, probe_browser_use, read_public_page
+from .observability import ExecutionLogStore, utc_now as observability_utc_now
 from .orchestration import OrchestrationStore, classify_tool_effect
 from .orchestration_mcp import handle_orchestration_tool, orchestration_tool_specs
 from .research import ResearchStore
@@ -334,6 +336,8 @@ class AhmedToolboxGateway:
         runtime_enabled: bool | None = None,
         ace_store: ACEStore | None = None,
         ace_enabled: bool | None = None,
+        observability_store: ExecutionLogStore | None = None,
+        observability_enabled: bool | None = None,
     ):
         self.agent_reach = agent_reach or AgentReach()
         self.remotes = remotes or {}
@@ -385,12 +389,27 @@ class AhmedToolboxGateway:
             if self.ace_enabled
             else None
         )
+        self.observability_enabled = (
+            bool(observability_store)
+            if observability_enabled is None
+            else bool(observability_enabled)
+        )
+        self.observability_store = (
+            observability_store if self.observability_enabled else None
+        )
 
     @classmethod
     def from_environment(cls) -> "AhmedToolboxGateway":
         raw = os.environ.get("AHMED_TOOLBOX_REMOTE_MCPS", "").strip()
+        observability_enabled = _env_flag("AHMED_OBSERVABILITY_ENABLED", True)
+        observability_store = (
+            ExecutionLogStore.from_environment() if observability_enabled else None
+        )
         if not raw:
-            return cls()
+            return cls(
+                observability_store=observability_store,
+                observability_enabled=observability_enabled,
+            )
         try:
             config = json.loads(raw)
         except json.JSONDecodeError as exc:
@@ -451,7 +470,11 @@ class AhmedToolboxGateway:
             if prefix in remotes:
                 raise ValueError(f"duplicate remote MCP prefix: {prefix}")
             remotes[prefix] = RemoteMCPClient(remote_config)
-        return cls(remotes)
+        return cls(
+            remotes,
+            observability_store=observability_store,
+            observability_enabled=observability_enabled,
+        )
 
     @staticmethod
     def _local_tool_specs() -> list[dict[str, Any]]:
@@ -621,6 +644,28 @@ class AhmedToolboxGateway:
 
     def list_tools(self) -> list[dict[str, Any]]:
         tools = list(self._local_tool_specs())
+        if self.observability_enabled and self.observability_store is not None:
+            tools.append(
+                {
+                    "name": "toolbox_execution_stats",
+                    "description": (
+                        "Return secret-safe Ahmed Toolbox execution reliability "
+                        "metrics for a bounded recent time window."
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "hours": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 720,
+                                "default": 24,
+                            }
+                        },
+                        "additionalProperties": False,
+                    },
+                }
+            )
         if self.research_enabled:
             tools.extend(research_tool_specs())
             tools.extend(temporal_tool_specs())
@@ -660,8 +705,82 @@ class AhmedToolboxGateway:
                 )
         return tools
 
-    def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        request_id: str | int | None = None,
+    ) -> dict[str, Any]:
         arguments = arguments or {}
+        store = self.observability_store if self.observability_enabled else None
+        identifiers = (
+            store.identifiers(arguments, request_id=request_id)
+            if store is not None
+            else None
+        )
+        started_at = observability_utc_now()
+        started = time.perf_counter()
+        try:
+            result = self._dispatch_tool(name, arguments)
+        except Exception as exc:
+            if store is not None and identifiers is not None:
+                store.record(
+                    **identifiers,
+                    tool_name=name,
+                    started_at=started_at,
+                    completed_at=observability_utc_now(),
+                    duration_ms=(time.perf_counter() - started) * 1000.0,
+                    success=False,
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                )
+            raise
+
+        if store is not None and identifiers is not None:
+            meta = store.result_metadata(result)
+            success = not bool(result.get("isError"))
+            error_message = None
+            if not success:
+                error_message = "\n".join(
+                    str(block.get("text") or "")
+                    for block in (result.get("content") or [])
+                    if isinstance(block, dict) and block.get("type") == "text"
+                ).strip()
+            workflow_id = identifiers.get("workflow_id") or meta.pop("workflow_id")
+            store.record(
+                **{**identifiers, "workflow_id": workflow_id},
+                tool_name=name,
+                started_at=started_at,
+                completed_at=observability_utc_now(),
+                duration_ms=(time.perf_counter() - started) * 1000.0,
+                success=success,
+                error_type=None if success else "ToolError",
+                error_message=error_message,
+                **meta,
+            )
+        return result
+
+    def _dispatch_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        if name == "toolbox_execution_stats":
+            if not self.observability_enabled or self.observability_store is None:
+                return self._text_result("observability is disabled", is_error=True)
+            try:
+                hours = int(arguments.get("hours") or 24)
+            except (TypeError, ValueError):
+                return self._text_result("hours must be an integer", is_error=True)
+            return self._text_result(
+                json.dumps(
+                    self.observability_store.stats(hours=hours),
+                    ensure_ascii=False,
+                    default=str,
+                )
+            )
+
         if self.orchestration_enabled and self.orchestration_store is not None:
             try:
                 orchestration_result = handle_orchestration_tool(
