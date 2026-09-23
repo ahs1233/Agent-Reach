@@ -156,7 +156,29 @@ class OrchestrationStore:
         limits.update({k: int(v) for k, v in (budget or {}).items() if k in limits})
         if any(v < 0 for v in limits.values()):
             raise ValueError("budget values must be non-negative")
-        lanes = specialists or DEFAULT_SPECIALISTS
+        if specialists is None:
+            lanes = DEFAULT_SPECIALISTS
+        else:
+            if not isinstance(specialists, dict) or not specialists:
+                raise ValueError(
+                    "specialists must be a non-empty object mapping role -> tool pattern list"
+                )
+            lanes: dict[str, list[str]] = {}
+            for raw_role, raw_patterns in specialists.items():
+                if not isinstance(raw_role, str) or not raw_role.strip():
+                    raise ValueError("specialist role names must be non-empty strings")
+                if (
+                    not isinstance(raw_patterns, list)
+                    or not raw_patterns
+                    or not all(
+                        isinstance(pattern, str) and pattern.strip()
+                        for pattern in raw_patterns
+                    )
+                ):
+                    raise ValueError(
+                        f"specialists[{raw_role!r}] must be a non-empty array of tool patterns"
+                    )
+                lanes[raw_role.strip()] = [pattern.strip() for pattern in raw_patterns]
         oid = "orch_" + uuid.uuid4().hex
         now = _now()
         with self._connect() as conn:
