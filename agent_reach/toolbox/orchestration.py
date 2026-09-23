@@ -282,9 +282,22 @@ def build_verification_report(store: OrchestrationStore, orchestration_id: str,
         else:
             checks["research_linked"] = True
             try:
+                snapshot = research_store.export_run(run["research_run_id"])
                 audit = research_store.audit_run(run["research_run_id"])
                 research = {"audit": audit}
+                checks["research_has_sources"] = bool(snapshot.get("sources"))
+                checks["research_has_evidence"] = bool(snapshot.get("evidence"))
+                checks["research_has_claims"] = bool(snapshot.get("claims"))
                 checks["research_audit"] = bool(audit.get("passed"))
+                checks["claims_have_evidence"] = all(
+                    bool(claim.get("supporting_evidence_ids"))
+                    for claim in snapshot.get("claims", [])
+                )
+                checks["verified_claims_checked"] = all(
+                    int(claim.get("verification_count") or 0) >= 1
+                    for claim in snapshot.get("claims", [])
+                    if claim.get("classification") == "VERIFIED"
+                )
             except (TypeError, ValueError) as exc:
                 research = {"error": str(exc)}
                 checks["research_audit"] = False
