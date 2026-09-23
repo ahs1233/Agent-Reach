@@ -373,15 +373,24 @@ def handle_runtime_tool(
                 metadata={"learned_session_id": session_id, "workflow_hash": result["workflow_hash"]},
                 change_note="Captured from successful workflow execution",
             )
-            skill = store.record_skill_outcome(learn_as, True)
+            skill = store.record_skill_outcome(
+                learn_as,
+                True,
+                duration_ms=float(result.get("duration_ms") or 0.0),
+            )
             result["learned_skill"] = {
-                "name": skill["name"], "revision": skill["revision"], "score": skill["score"]
+                "name": skill["name"],
+                "revision": skill["revision"],
+                "score": skill["score"],
+                "trust_status": skill["skill_policy"]["status"],
             }
         return result
 
     if name == "runtime_skill_execute":
         skill_name = str(arguments.get("name") or "")
         skill = store.get_skill(skill_name)
+        if skill["skill_policy"]["status"] == "ARCHIVED":
+            raise ValueError("archived skill cannot execute")
         session_id = str(arguments.get("session_id") or new_session_id("skill"))
         result = run_workflow(
             skill["workflow"],
@@ -391,7 +400,11 @@ def handle_runtime_tool(
             fail_fast=bool(arguments.get("fail_fast", True)),
         )
         success = result["status"] == "ok"
-        store.record_skill_outcome(skill_name, success)
+        store.record_skill_outcome(
+            skill_name,
+            success,
+            duration_ms=float(result.get("duration_ms") or 0.0),
+        )
         recovery = None
         if not success:
             recovery = store.maybe_auto_rollback_skill(skill_name)
@@ -403,6 +416,7 @@ def handle_runtime_tool(
                 "executed_revision": skill["revision"],
                 "active_revision": active["revision"],
                 "score": active["score"],
+                "trust_status": active["skill_policy"]["status"],
             },
         })
         if recovery is not None:
