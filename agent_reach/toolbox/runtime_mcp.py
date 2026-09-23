@@ -50,7 +50,7 @@ def runtime_tool_specs() -> list[dict[str, Any]]:
                     "fail_fast": {"type": "boolean", "default": True},
                     "learn_as": {"type": "string", "maxLength": 80},
                     "skill_description": {"type": "string", "maxLength": 2000},
-                    "auto_learn": {"type": "boolean", "default": true},
+                    "auto_learn": {"type": "boolean", "default": True},
                     "auto_learn_threshold": {"type": "integer", "minimum": 2, "maximum": 20, "default": 3},
                 },
                 "additionalProperties": False,

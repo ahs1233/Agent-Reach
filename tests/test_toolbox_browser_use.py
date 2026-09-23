@@ -1,4 +1,6 @@
+import ast
 import json
+import shutil
 import subprocess
 
 import pytest
@@ -150,3 +152,68 @@ def test_comment_script_retries_lazy_loading():
     assert "scrollIntoView" in script
     assert "window.scrollBy" in script
     assert "ytd-comment-thread-renderer #content-text" in script
+
+
+@pytest.mark.parametrize("rendered, expected", [
+    ("The real video description", "The real video description"),
+    ("", ""),
+])
+def test_description_rejects_generic_youtube_metadata(rendered, expected):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required to execute the browser JavaScript fixture")
+    script = browser_use._build_script("https://youtu.be/abc", include_comments=False, max_comments=0)
+    assignment = next(n for n in ast.parse(script).body
+                      if isinstance(n, ast.Assign) and n.targets[0].id == "description")
+    expression = assignment.value.values[0].args[0].value
+    fixture = """
+const rendered = JSON.parse(process.argv[1]);
+global.window = {ytInitialPlayerResponse: {playabilityStatus: {
+  reason: "Sign in to confirm you're not a bot"
+}}};
+global.document = {querySelector(selector) {
+  if (selector.includes('meta[')) return {content:
+    'Enjoy the videos and music you love, upload original content, and share it all with friends, family, and the world on YouTube.'};
+  return {innerText: rendered};
+}};
+"""
+    result = subprocess.run([node, "-e", fixture + "console.log(JSON.stringify(" + expression + "));",
+                             json.dumps(rendered)], capture_output=True, text=True, check=True)
+    assert json.loads(result.stdout) == expected
+
+
+def test_script_accumulates_delayed_comments_and_preserves_description(capsys):
+    batches = iter([
+        [{"author": "A", "text": "first"}],
+        [{"author": "A", "text": "first"}, {"author": "B", "text": "second"}],
+        [{"author": "C", "text": "third"}],
+    ])
+    calls = {"batches": 0}
+
+    def js(expression):
+        if "querySelectorAll" in expression:
+            calls["batches"] += 1
+            return next(batches)
+        if "shortDescription" in expression:
+            if "document.body" in expression:
+                return "Sign in to confirm you're not a bot"
+            return "Real description" if not calls["batches"] else ""
+        if "details?.title" in expression:
+            return "Video title"
+        if "location.href" in expression:
+            return "https://www.youtube.com/watch?v=abc"
+        return True
+
+    namespace = {"js": js}
+    for name in ("ensure_real_tab", "goto_url", "wait_for_load", "wait_for_element", "wait"):
+        namespace[name] = lambda *args, **kwargs: None
+    exec(browser_use._build_script("https://youtu.be/abc", include_comments=True, max_comments=3), namespace)
+    payload = json.loads(capsys.readouterr().out.split(browser_use._RESULT_MARKER)[1])
+    assert payload["description"] == "Real description"
+    assert payload["comments"] == ["first", "second", "third"]
+    assert calls["batches"] == 3
+
+
+def test_comments_disabled_never_queries_comment_dom():
+    script = browser_use._build_script("https://youtu.be/abc", include_comments=False, max_comments=5)
+    assert "querySelectorAll" not in script

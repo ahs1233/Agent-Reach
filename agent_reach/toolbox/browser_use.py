@@ -111,12 +111,18 @@ def _build_script(url: str, *, include_comments: bool, max_comments: int) -> str
     description_js = repr(
         """(() => {
   const details = window.ytInitialPlayerResponse?.videoDetails;
-  return details?.shortDescription
-    || document.querySelector('meta[name="description"]')?.content
-    || document.querySelector('meta[property="og:description"]')?.content
-    || document.querySelector('#description-inline-expander')?.innerText
-    || document.querySelector('#description')?.innerText
-    || '';
+  const candidates = [
+    details?.shortDescription,
+    document.querySelector('ytd-watch-metadata #description-inline-expander')?.innerText,
+    document.querySelector('#description-inline-expander')?.innerText,
+    document.querySelector('ytd-watch-metadata #description')?.innerText,
+    document.querySelector('meta[name="description"]')?.content,
+    document.querySelector('meta[property="og:description"]')?.content
+  ];
+  return candidates.map(value => (value || '').trim()).find(value =>
+    value && !/^Enjoy the videos and music you love, upload original content/i.test(value)
+      && !/^Sign in to confirm you[’']re not a bot/i.test(value)
+  ) || '';
 })()"""
     )
     visible_text_js = repr(
@@ -139,11 +145,20 @@ def _build_script(url: str, *, include_comments: bool, max_comments: int) -> str
     if include_comments:
         comment_block = f"""
 comments = []
+seen_comments = set()
 js("document.querySelector('ytd-comments#comments, #comments')?.scrollIntoView({{block: 'start'}}); true")
 wait(2)
 for _ in range(6):
-    comments = js("Array.from(document.querySelectorAll('ytd-comment-thread-renderer #content-text')).slice(0, {max_comments}).map(e => e.innerText || '')") or []
-    if comments:
+    batch = js("Array.from(document.querySelectorAll('ytd-comment-thread-renderer #content-text')).map(e => ({{text: (e.innerText || '').trim(), author: e.closest('ytd-comment-thread-renderer')?.querySelector('#author-text')?.innerText || ''}})).filter(c => c.text)") or []
+    for item in batch:
+        text = item.get('text', '').strip()
+        key = (item.get('author', '').strip(), text)
+        if text and key not in seen_comments:
+            seen_comments.add(key)
+            comments.append(text)
+        if len(comments) >= {max_comments}:
+            break
+    if len(comments) >= {max_comments}:
         break
     js("window.scrollBy(0, 1200); true")
     wait(2)
@@ -157,9 +172,12 @@ wait_for_load(timeout=20)
 wait_for_element("ytd-watch-flexy, ytd-watch-metadata", timeout=12)
 wait(3)
 resolved_url = js("location.href || ''") or {safe_url}
-{comment_block}
 title = js({title_js}) or ''
 description = js({description_js}) or ''
+{comment_block}
+# Preserve usable metadata if the player changes while comments lazy-load.
+title = title or js({title_js}) or ''
+description = description or js({description_js}) or ''
 visible_text = js({visible_text_js}) or ''
 payload = {{
     'resolved_url': resolved_url,
