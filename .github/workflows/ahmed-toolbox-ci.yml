@@ -10,6 +10,8 @@ on:
       - "integrations/panwatch/**"
       - "tests/test_toolbox_gateway.py"
       - "tests/test_toolbox_orchestration.py"
+      - "tests/test_toolbox_runtime.py"
+      - "tests/test_runtime_trust_gate.py"
       - "tests/test_toolbox_browser_use.py"
       - "tests/test_xau_intraday_integration.py"
       - "Dockerfile"
@@ -44,8 +46,8 @@ jobs:
       - name: Ruff
         run: |
           ruff check agent_reach/toolbox
-          ruff check tests/test_toolbox_gateway.py tests/test_toolbox_orchestration.py tests/test_toolbox_browser_use.py tests/test_xau_intraday_integration.py
+          ruff check tests/test_toolbox_gateway.py tests/test_toolbox_orchestration.py tests/test_toolbox_runtime.py tests/test_runtime_trust_gate.py tests/test_toolbox_browser_use.py tests/test_xau_intraday_integration.py
 
       - name: Focused tests
         run: |
-          pytest -q tests/test_toolbox_gateway.py tests/test_toolbox_orchestration.py tests/test_toolbox_browser_use.py tests/test_xau_intraday_integration.py
+          pytest -q tests/test_toolbox_gateway.py tests/test_toolbox_orchestration.py tests/test_toolbox_runtime.py tests/test_runtime_trust_gate.py tests/test_toolbox_browser_use.py tests/test_xau_intraday_integration.py
