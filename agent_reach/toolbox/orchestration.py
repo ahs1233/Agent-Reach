@@ -31,7 +31,13 @@ READ_ONLY_REMOTE_TOOLS = {
     "scrapling__bulk_get", "scrapling__fetch", "scrapling__bulk_fetch",
     "scrapling__stealthy_fetch", "scrapling__bulk_stealthy_fetch",
 }
-NETWORK_TOOLS = {"reach_web_search", "reach_read_url", "reach_retrieve_url", "reach_media_ingest"} | READ_ONLY_REMOTE_TOOLS
+NETWORK_TOOLS = {
+    "reach_web_search",
+    "reach_read_url",
+    "reach_retrieve_url",
+    "reach_media_ingest",
+    "reach_youtube_browser_inspect",
+} | READ_ONLY_REMOTE_TOOLS
 OUTPUT_TOOLS = {"research_create_output"}
 RUN_SCOPED_TOOLS = {
     "research_record_source", "research_record_source_relationship", "research_add_evidence",
@@ -203,7 +209,15 @@ class OrchestrationStore:
     def usage(self, orchestration_id: str) -> dict[str, int]:
         events = self.list_events(orchestration_id)
         allowed = [e for e in events if e["event_type"] == "TOOL_ALLOWED"]
-        return {"tool_calls": len(allowed), "network_calls": sum(e["tool_name"] in NETWORK_TOOLS for e in allowed)}
+        return {
+            "tool_calls": len(allowed),
+            "network_calls": sum(
+                bool(e["tool_name"]) and (
+                    e["tool_name"] in NETWORK_TOOLS or "__" in e["tool_name"]
+                )
+                for e in allowed
+            ),
+        }
 
     def authorize_tool(
         self,
@@ -235,7 +249,7 @@ class OrchestrationStore:
             usage = self.usage(orchestration_id)
             if usage["tool_calls"] >= run["budget"]["tool_calls"]:
                 reason = "tool_budget_exhausted"
-            elif tool_name in NETWORK_TOOLS and usage["network_calls"] >= run["budget"]["network_calls"]:
+            elif (tool_name in NETWORK_TOOLS or "__" in tool_name) and usage["network_calls"] >= run["budget"]["network_calls"]:
                 reason = "network_budget_exhausted"
         allowed = reason is None
         event = self.append_event(
