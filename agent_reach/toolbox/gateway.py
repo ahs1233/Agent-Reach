@@ -528,7 +528,8 @@ class AhmedToolboxGateway:
                 "description": (
                     "Retrieve a public page through the controlled fallback state machine: "
                     "Jina -> Scrapling fetch -> Scrapling stealthy -> optional configured "
-                    "browser backend. Returns content plus every attempt/reason."
+                    "browser backend -> targeted web discovery. Alternative discovery is "
+                    "kept distinct from the blocked original source to preserve provenance."
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -555,6 +556,14 @@ class AhmedToolboxGateway:
                         "require_all_terms": {
                             "type": "boolean",
                             "default": True,
+                        },
+                        "discovery_query": {
+                            "type": "string",
+                            "maxLength": 1000,
+                            "description": (
+                                "Optional targeted-search query used only after the "
+                                "original URL retrieval path is exhausted."
+                            ),
                         },
                     },
                     "additionalProperties": False,
@@ -1043,6 +1052,10 @@ class AhmedToolboxGateway:
                         arguments.get("require_all_terms", True)
                     ),
                     browser_tool=browser_tool or None,
+                    discovery_tool="reach_web_search",
+                    discovery_query=(
+                        str(arguments.get("discovery_query") or "").strip() or None
+                    ),
                 )
             except (TypeError, ValueError) as exc:
                 return self._text_result(
