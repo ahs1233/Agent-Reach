@@ -57,6 +57,10 @@ _DEFAULT_REMOTE_ALLOWLISTS: dict[str, tuple[str, ...]] = {
         "bulk_stealthy_fetch",
     ),
 }
+_DEFAULT_REMOTE_EFFECTS: dict[str, dict[str, str]] = {
+    "scrapling": {name: "SE0" for name in _DEFAULT_REMOTE_ALLOWLISTS["scrapling"]},
+}
+_REMOTE_TRUST_LEVELS = {"untrusted", "read_only", "full"}
 
 
 class RemoteMCPError(RuntimeError):
@@ -71,6 +75,8 @@ class RemoteMCPConfig:
     timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS
     protocol_version: str = "2024-11-05"
     allow_tools: tuple[str, ...] = ()
+    trust: str = "untrusted"
+    effect_classes: dict[str, str] | None = None
 
     @property
     def prefix(self) -> str:
@@ -81,6 +87,20 @@ class RemoteMCPConfig:
 
     def allows(self, tool_name: str) -> bool:
         return tool_name in set(self.allow_tools)
+
+    def effect_class(self, tool_name: str) -> str | None:
+        if self.effect_classes and tool_name in self.effect_classes:
+            value = self.effect_classes[tool_name]
+            return value if value in {"SE0", "SE1", "SE2", "SE3", "SE4"} else None
+        return _DEFAULT_REMOTE_EFFECTS.get(self.prefix, {}).get(tool_name)
+
+    def can_execute(self, tool_name: str) -> bool:
+        if not self.allows(tool_name):
+            return False
+        effect = self.effect_class(tool_name)
+        if self.trust == "full":
+            return effect is not None
+        return effect == "SE0"
 
 
 class RemoteMCPClient:
@@ -361,6 +381,23 @@ class AhmedToolboxGateway:
                     f"remote MCP {name!r} allow_tools must be a list of tool names"
                 )
 
+            trust = str(item.get("trust") or ("read_only" if prefix in _DEFAULT_REMOTE_ALLOWLISTS else "untrusted")).strip().lower()
+            if trust not in _REMOTE_TRUST_LEVELS:
+                raise ValueError(
+                    f"remote MCP {name!r} trust must be one of: untrusted, read_only, full"
+                )
+            raw_effects = item.get("effect_classes") or {}
+            if not isinstance(raw_effects, dict):
+                raise ValueError(f"remote MCP {name!r} effect_classes must be an object")
+            effect_classes: dict[str, str] = {}
+            for tool_name, effect in raw_effects.items():
+                effect_value = str(effect)
+                if effect_value not in {"SE0", "SE1", "SE2", "SE3", "SE4"}:
+                    raise ValueError(
+                        f"remote MCP {name!r} has invalid effect class for {tool_name!r}"
+                    )
+                effect_classes[str(tool_name)] = effect_value
+
             remote_config = RemoteMCPConfig(
                 name=str(name),
                 url=str(item["url"]),
@@ -368,6 +405,8 @@ class AhmedToolboxGateway:
                 timeout_seconds=float(item.get("timeout_seconds") or _DEFAULT_TIMEOUT_SECONDS),
                 protocol_version=str(item.get("protocol_version") or "2024-11-05"),
                 allow_tools=allow_tools,
+                trust=trust,
+                effect_classes=effect_classes,
             )
             prefix = remote_config.prefix
             if prefix in remotes:
@@ -578,7 +617,16 @@ class AhmedToolboxGateway:
 
     def resolve_tool_effect(self, name: str) -> str | None:
         """Return the effect class used by orchestration/runtime trust gates."""
-        return classify_tool_effect(name)
+        local = classify_tool_effect(name)
+        if local is not None:
+            return local
+        if "__" not in name:
+            return None
+        prefix, remote_name = name.split("__", 1)
+        remote = self.remotes.get(prefix)
+        if remote is None or not remote_name:
+            return None
+        return remote.config.effect_class(remote_name)
 
     def _runtime_execute_step(
         self,
@@ -864,6 +912,14 @@ class AhmedToolboxGateway:
         if not remote.is_tool_allowed(remote_name):
             return self._text_result(
                 f"tool is not allowlisted: {name}",
+                is_error=True,
+            )
+        if not remote.config.can_execute(remote_name):
+            effect = remote.config.effect_class(remote_name)
+            return self._text_result(
+                f"remote trust gate denied {name}: trust={remote.config.trust}, "
+                f"effect={effect or 'unknown'}; explicitly classify the tool and use trust=full "
+                "only for operator-approved write-capable servers",
                 is_error=True,
             )
         try:
