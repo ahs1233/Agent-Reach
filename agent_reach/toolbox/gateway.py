@@ -29,7 +29,7 @@ from agent_reach.channels.web import WebChannel
 
 from .ace import ACEStore
 from .ace_mcp import ace_tool_specs, handle_ace_tool
-from .browser_use import inspect_youtube_page, probe_browser_use
+from .browser_use import inspect_youtube_page, probe_browser_use, read_public_page
 from .orchestration import OrchestrationStore, classify_tool_effect
 from .orchestration_mcp import handle_orchestration_tool, orchestration_tool_specs
 from .research import ResearchStore
@@ -484,6 +484,33 @@ class AhmedToolboxGateway:
                             "minimum": 1,
                             "maximum": 10,
                             "default": 5,
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "reach_browser_read_url",
+                "description": (
+                    "Read rendered text from a public HTTP(S) page through Browser Use. "
+                    "Read-only and bounded; local/private network targets are rejected."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["url"],
+                    "properties": {
+                        "url": {"type": "string", "minLength": 1, "maxLength": 2000},
+                        "max_chars": {
+                            "type": "integer",
+                            "minimum": 1000,
+                            "maximum": 100000,
+                            "default": 50000,
+                        },
+                        "timeout_seconds": {
+                            "type": "integer",
+                            "minimum": 5,
+                            "maximum": 120,
+                            "default": 45,
                         },
                     },
                     "additionalProperties": False,
@@ -979,6 +1006,30 @@ class AhmedToolboxGateway:
             )
             return self._text_result(diagnostic, is_error=True)
 
+        if name == "reach_browser_read_url":
+            url = str(arguments.get("url") or "").strip()
+            if not url:
+                return self._text_result("url is required", is_error=True)
+            try:
+                evidence = read_public_page(
+                    url,
+                    max_chars=int(arguments.get("max_chars") or 50000),
+                    timeout_seconds=int(arguments.get("timeout_seconds") or 45),
+                )
+            except (TypeError, ValueError) as exc:
+                return self._text_result(
+                    f"Browser read input error: {exc}",
+                    is_error=True,
+                )
+            except Exception as exc:  # noqa: BLE001 - optional browser boundary
+                return self._text_result(
+                    f"Browser read failed: {exc}",
+                    is_error=True,
+                )
+            return self._text_result(
+                json.dumps(evidence, ensure_ascii=False, default=str)
+            )
+
         if name == "reach_youtube_browser_inspect":
             url = str(arguments.get("url") or "").strip()
             if not url:
@@ -1034,7 +1085,7 @@ class AhmedToolboxGateway:
                 )
             browser_tool = os.environ.get(
                 "AHMED_TOOLBOX_BROWSER_FALLBACK_TOOL",
-                "",
+                "reach_browser_read_url",
             ).strip()
             if browser_tool == "reach_retrieve_url":
                 browser_tool = ""
