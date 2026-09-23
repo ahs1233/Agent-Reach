@@ -484,7 +484,15 @@ def _failure_case(number, tmp_path):
                 status, _ = _post(port, b"{")
                 assert status == 400
             elif number == 72:
-                status, _ = _post(port, b"x" * (1024 * 1024 + 1))
+                connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                connection.putrequest("POST", "/mcp")
+                connection.putheader("Content-Type", "application/json")
+                connection.putheader("Content-Length", str(1024 * 1024 + 1))
+                connection.endheaders()
+                response = connection.getresponse()
+                status = response.status
+                response.read()
+                connection.close()
                 assert status == 413
             else:
                 body = json.dumps({"jsonrpc":"2.0","id":1,"method":"ping"}).encode()
@@ -497,7 +505,13 @@ def _failure_case(number, tmp_path):
         finally:
             server.shutdown(); server.server_close(); thread.join(timeout=2)
     if number == 74:
-        gateway = _gateway(tmp_path, research=False)
+        gateway = AhmedToolboxGateway(
+            agent_reach=FakeReach(),
+            research_enabled=False,
+            orchestration_enabled=False,
+            runtime_enabled=False,
+            ace_enabled=False,
+        )
         names = {tool["name"] for tool in gateway.list_tools()}
         assert "research_start_run" not in names and "reach_doctor" in names
         return "Research-disabled environment preserved local core", {"tool_count": len(names)}
@@ -577,7 +591,7 @@ def _execute(case, tmp_path):
     n = int(case["number"])
     if n in {4,5,6,7,66}: return _retrieval_case(n)
     if n == 14:
-        parsed = feedparser.loads("""<?xml version="1.0"?><rss version="2.0"><channel><title>Golden</title><item><title>One</title><link>https://example.com/1</link></item></channel></rss>""")
+        parsed = feedparser.parse(b"""<?xml version="1.0"?><rss version="2.0"><channel><title>Golden</title><item><title>One</title><link>https://example.com/1</link></item></channel></rss>""")
         assert parsed.feed.title == "Golden" and parsed.entries[0].title == "One"
         return "RSS parsed", {"entries": len(parsed.entries)}
     if 16 <= n <= 35: return _research_case(n)
