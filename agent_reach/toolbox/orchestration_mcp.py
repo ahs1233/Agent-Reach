@@ -97,7 +97,7 @@ def handle_orchestration_tool(
             preflight = build_verification_report(store, orchestration_id, research_store)
             if not preflight["passed"]:
                 return {"executed": False, "reason": "verification_gate_failed", "verification": preflight}
-        authorization = store.authorize_tool(orchestration_id, role, target, tool_args)
+        effect_class = resolve_effect(target) if resolve_effect is not None else None\n        authorization = store.authorize_tool(\n            orchestration_id, role, target, tool_args, effect_class=effect_class\n        )
         if not authorization["allowed"]:
             return {"executed": False, "authorization": authorization}
         if execute_tool is None:
@@ -106,6 +106,6 @@ def handle_orchestration_tool(
             result = execute_tool(target, tool_args)
         except Exception as exc:  # noqa: BLE001
             result = {"content": [{"type": "text", "text": f"{type(exc).__name__}: {exc}"}], "isError": True}
-        store.record_result(orchestration_id, authorization["authorization_event_id"], role, target, result)
+        store.record_result(\n            orchestration_id, authorization["authorization_event_id"], role, target, result,\n            effect_class=authorization.get("effect_class"),\n        )
         return {"executed": True, "authorization": authorization, "result": result}
     return None
