@@ -21,7 +21,17 @@ def orchestration_tool_specs() -> list[dict[str, Any]]:
          "inputSchema": {"type": "object", "required": ["objective"], "properties": {
              "objective": {"type": "string", "minLength": 1}, "mode": {"type": "string", "enum": ["research", "general"], "default": "research"},
              "research_run_id": {"type": "string"}, "cutoff": {"type": "string"}, "budget": {"type": "object"},
-             "specialists": {"type": "object"}, "max_effect_class": {"type": "string", "enum": ["SE0","SE1","SE2","SE3","SE4"], "default": "SE1"},
+             "specialists": {
+                 "type": "object",
+                 "minProperties": 1,
+                 "additionalProperties": {
+                     "type": "array",
+                     "minItems": 1,
+                     "items": {"type": "string", "minLength": 1},
+                 },
+                 "description": "Role -> allowed tool-pattern array, e.g. {\"orchestrator\":[\"reach_doctor\"]}.",
+             },
+             "max_effect_class": {"type": "string", "enum": ["SE0","SE1","SE2","SE3","SE4"], "default": "SE1"},
              "metadata": {"type": "object"}}, "additionalProperties": False}},
         {"name": "orchestration_status", "description": "Return run state, budgets, and journal integrity.",
          "inputSchema": {"type": "object", "required": ["orchestration_id"], "properties": common_id, "additionalProperties": False}},
