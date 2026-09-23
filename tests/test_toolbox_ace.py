@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from agent_reach.toolbox.ace import (
@@ -11,6 +13,7 @@ from agent_reach.toolbox.ace import (
     validate_content_claims,
 )
 from agent_reach.toolbox.ace_mcp import handle_ace_tool
+from agent_reach.toolbox.gateway import AhmedToolboxGateway
 from agent_reach.toolbox.research import ResearchStore
 
 
@@ -719,3 +722,44 @@ def test_case_study_never_claims_winner_without_analytics(
         )
         == 5
     )
+
+
+
+class _GatewayReach:
+    def doctor(self):
+        return {"web": {"status": "ok"}}
+
+
+def test_ace_is_integrated_into_gateway(tmp_path):
+    ace_store = ACEStore(
+        str(tmp_path / "ace-gateway.db")
+    )
+    research_store = ResearchStore(
+        str(tmp_path / "research-gateway.db")
+    )
+    gateway = AhmedToolboxGateway(
+        agent_reach=_GatewayReach(),
+        research_store=research_store,
+        research_enabled=True,
+        runtime_enabled=False,
+        ace_store=ace_store,
+        ace_enabled=True,
+    )
+
+    names = {
+        tool["name"]
+        for tool in gateway.list_tools()
+    }
+    assert "ace_status" in names
+    assert "ace_case_study" in names
+
+    result = gateway.call_tool(
+        "ace_status",
+        {},
+    )
+    assert result["isError"] is False
+    payload = json.loads(
+        result["content"][0]["text"]
+    )
+    assert payload["status"] == "ok"
+    assert payload["free_only_supported"] is True
