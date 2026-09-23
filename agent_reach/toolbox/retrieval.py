@@ -14,6 +14,19 @@ from typing import Any
 
 ToolCaller = Callable[[str, dict[str, Any]], dict[str, Any]]
 
+RATE_LIMIT_MARKERS = (
+    "429",
+    "too many requests",
+    "rate limit",
+    "rate-limited",
+    "rate_limited",
+)
+
+FORBIDDEN_MARKERS = (
+    "403",
+    "forbidden",
+)
+
 ANTI_BOT_MARKERS = (
     "verify you are human",
     "verification required",
@@ -94,6 +107,8 @@ def retrieve_with_fallback(
     required_terms: list[str] | None = None,
     require_all_terms: bool = True,
     browser_tool: str | None = None,
+    discovery_tool: str | None = None,
+    discovery_query: str | None = None,
 ) -> dict[str, Any]:
     """Run the frozen retrieval escalation path and retain attempt provenance."""
     target = str(url or "").strip()
@@ -147,8 +162,11 @@ def retrieve_with_fallback(
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         if result.get("isError"):
             detail = _result_text(result)
-            blocked = any(
-                marker in detail.lower() for marker in ANTI_BOT_MARKERS
+            lowered_detail = detail.lower()
+            rate_limited = any(marker in lowered_detail for marker in RATE_LIMIT_MARKERS)
+            forbidden = any(marker in lowered_detail for marker in FORBIDDEN_MARKERS)
+            blocked = forbidden or any(
+                marker in lowered_detail for marker in ANTI_BOT_MARKERS
             )
             attempts.append(
                 {
@@ -157,7 +175,11 @@ def retrieve_with_fallback(
                     "method": method,
                     "status": "BLOCKED" if blocked else "FAILED",
                     "reason_code": (
-                        "ANTI_BOT_CHALLENGE" if blocked else "TOOL_ERROR"
+                        "RATE_LIMITED"
+                        if rate_limited
+                        else ("HTTP_403_FORBIDDEN" if forbidden else (
+                            "ANTI_BOT_CHALLENGE" if blocked else "TOOL_ERROR"
+                        ))
                     ),
                     "detail": detail[:1200],
                     "duration_ms": round(elapsed_ms, 3),
@@ -197,6 +219,85 @@ def retrieve_with_fallback(
             final_method = method
             break
 
+    alternative_discovery = ""
+    if final_tool is None and discovery_tool:
+        query = str(discovery_query or "").strip()
+        if not query:
+            query = " ".join(terms).strip() or target
+        started = time.perf_counter()
+        try:
+            result = call_tool(
+                str(discovery_tool),
+                {"query": query[:1000], "num_results": 5},
+            )
+        except Exception as exc:  # noqa: BLE001 - provenance boundary
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            attempts.append(
+                {
+                    "state": "TARGETED_SEARCH",
+                    "tool": str(discovery_tool),
+                    "method": "targeted_search",
+                    "status": "FAILED",
+                    "reason_code": "TOOL_EXCEPTION",
+                    "detail": f"{type(exc).__name__}: {exc}"[:1200],
+                    "duration_ms": round(elapsed_ms, 3),
+                    "content_length": 0,
+                    "missing_terms": [],
+                }
+            )
+        else:
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            detail = _result_text(result)
+            if result.get("isError"):
+                lowered_detail = detail.lower()
+                rate_limited = any(
+                    marker in lowered_detail for marker in RATE_LIMIT_MARKERS
+                )
+                attempts.append(
+                    {
+                        "state": "TARGETED_SEARCH",
+                        "tool": str(discovery_tool),
+                        "method": "targeted_search",
+                        "status": "FAILED",
+                        "reason_code": (
+                            "RATE_LIMITED" if rate_limited else "TOOL_ERROR"
+                        ),
+                        "detail": detail[:1200],
+                        "duration_ms": round(elapsed_ms, 3),
+                        "content_length": 0,
+                        "missing_terms": [],
+                    }
+                )
+            elif detail.strip():
+                alternative_discovery = detail[:max_chars]
+                attempts.append(
+                    {
+                        "state": "TARGETED_SEARCH",
+                        "tool": str(discovery_tool),
+                        "method": "targeted_search",
+                        "status": "DISCOVERED",
+                        "reason_code": "ALTERNATIVE_SOURCE_CANDIDATES",
+                        "detail": None,
+                        "duration_ms": round(elapsed_ms, 3),
+                        "content_length": len(alternative_discovery),
+                        "missing_terms": [],
+                    }
+                )
+            else:
+                attempts.append(
+                    {
+                        "state": "TARGETED_SEARCH",
+                        "tool": str(discovery_tool),
+                        "method": "targeted_search",
+                        "status": "FAILED",
+                        "reason_code": "EMPTY_CONTENT",
+                        "detail": None,
+                        "duration_ms": round(elapsed_ms, 3),
+                        "content_length": 0,
+                        "missing_terms": [],
+                    }
+                )
+
     retrieval_history = [
         {
             "stage": "RETRIEVAL",
@@ -233,6 +334,24 @@ def retrieve_with_fallback(
             "escalation_count": max(0, len(attempts) - 1),
             "browser_fallback_configured": bool(browser_tool),
             "browser_required": False,
+            "alternative_discovery": "",
+        }
+
+    if alternative_discovery:
+        return {
+            "status": "ALTERNATIVE_DISCOVERED",
+            "url": target,
+            "content": "",
+            "content_length": 0,
+            "final_tool": str(discovery_tool),
+            "retrieval_method": "targeted_search",
+            "attempts": attempts,
+            "retrieval_history": retrieval_history,
+            "escalation_count": max(0, len(attempts) - 1),
+            "browser_fallback_configured": bool(browser_tool),
+            "browser_required": False,
+            "reason_code": "ORIGINAL_SOURCE_UNAVAILABLE_ALTERNATIVES_DISCOVERED",
+            "alternative_discovery": alternative_discovery,
         }
 
     last_reason = attempts[-1]["reason_code"] if attempts else "NO_ATTEMPTS"
@@ -249,4 +368,5 @@ def retrieve_with_fallback(
         "browser_fallback_configured": bool(browser_tool),
         "browser_required": not bool(browser_tool),
         "reason_code": last_reason,
+        "alternative_discovery": "",
     }
