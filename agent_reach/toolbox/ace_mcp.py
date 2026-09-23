@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any, Callable
 
@@ -18,6 +19,19 @@ from .ace import (
 from .research import ResearchStore
 
 ToolExecutor = Callable[[str, dict[str, Any]], dict[str, Any]]
+
+
+def _free_only(arguments: dict[str, Any]) -> bool:
+    if "free_only" in arguments:
+        return bool(arguments["free_only"])
+    raw = os.environ.get("FREE_ONLY", "true")
+    return raw.strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+        "disabled",
+    }
 
 
 def ace_tool_specs() -> list[dict[str, Any]]:
@@ -1231,6 +1245,7 @@ def handle_ace_tool(
             "schema": "ace-status/v1",
             "status": "ok",
             "free_only_supported": True,
+            "free_only_default": _free_only({}),
             "provider": provider.spec.to_dict(),
             "routing_order": [
                 "LOCAL",
@@ -1275,12 +1290,7 @@ def handle_ace_tool(
             platforms=arguments.get(
                 "platforms"
             ),
-            free_only=bool(
-                arguments.get(
-                    "free_only",
-                    True,
-                )
-            ),
+            free_only=_free_only(arguments),
             metadata=(
                 arguments.get("metadata")
                 or {}
@@ -1375,12 +1385,7 @@ def handle_ace_tool(
             platforms=arguments.get(
                 "platforms"
             ),
-            free_only=bool(
-                arguments.get(
-                    "free_only",
-                    True,
-                )
-            ),
+            free_only=_free_only(arguments),
             metadata={
                 "case_study": True,
             },
