@@ -8,8 +8,10 @@ comments.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import shutil
+import socket
 import subprocess
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -22,6 +24,7 @@ _RESULT_MARKER = "__AHMED_BROWSER_USE_JSON__"
 _DEFAULT_TIMEOUT_SECONDS = 45
 _MAX_TIMEOUT_SECONDS = 120
 _MAX_COMMENTS = 50
+_MAX_PUBLIC_PAGE_CHARS = 100000
 
 
 class BrowserUseUnavailable(RuntimeError):
@@ -76,6 +79,39 @@ def probe_browser_use() -> BrowserUseStatus:
             "browser-use CLI not found; install the optional interactive-browser extra on Python 3.11+",
         )
     return BrowserUseStatus(True, executable, "browser-use CLI available")
+
+
+def _validate_public_url(url: str) -> str:
+    value = str(url or "").strip()
+    parsed = urlsplit(value)
+    host = (parsed.hostname or "").strip().lower()
+    if parsed.scheme not in {"http", "https"} or not host:
+        raise ValueError("browser read requires a public HTTP(S) URL")
+    if parsed.username or parsed.password:
+        raise ValueError("URL credentials are not allowed")
+    if host == "localhost" or host.endswith(".localhost"):
+        raise ValueError("local/private browser targets are not allowed")
+
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None and not literal.is_global:
+        raise ValueError("local/private browser targets are not allowed")
+
+    try:
+        resolved = socket.getaddrinfo(host, parsed.port or 443, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise ValueError(f"browser target hostname could not be resolved: {exc}") from exc
+    for item in resolved:
+        address = item[4][0]
+        try:
+            resolved_ip = ipaddress.ip_address(address)
+        except ValueError:
+            continue
+        if not resolved_ip.is_global:
+            raise ValueError("browser target resolves to a local/private address")
+    return value
 
 
 def _validate_youtube_url(url: str) -> str:
@@ -299,3 +335,93 @@ def inspect_youtube_page(
         comments=comments,
     )
     return evidence.to_dict()
+
+
+def read_public_page(
+    url: str,
+    *,
+    max_chars: int = 50000,
+    timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """Read rendered text from a public page through Browser Use, read-only."""
+    source_url = _validate_public_url(url)
+    max_chars = _bounded_int(
+        max_chars,
+        minimum=1000,
+        maximum=_MAX_PUBLIC_PAGE_CHARS,
+        name="max_chars",
+    )
+    timeout_seconds = _bounded_int(
+        timeout_seconds,
+        minimum=5,
+        maximum=_MAX_TIMEOUT_SECONDS,
+        name="timeout_seconds",
+    )
+    status = probe_browser_use()
+    if not status.available or not status.executable:
+        raise BrowserUseUnavailable(status.detail)
+
+    safe_url = json.dumps(source_url, ensure_ascii=False)
+    script = f"""
+import json
+ensure_real_tab()
+goto_url({safe_url})
+wait_for_load(timeout=20)
+wait(2)
+payload = {{
+    'resolved_url': js("location.href || ''") or {safe_url},
+    'title': js("document.title || ''") or '',
+    'visible_text': (js("(document.body?.innerText || '').trim()") or '')[:{max_chars}],
+}}
+print({_RESULT_MARKER!r} + json.dumps(payload, ensure_ascii=False))
+""".strip() + "\n"
+
+    try:
+        completed = subprocess.run(
+            [status.executable],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise BrowserUseError(
+            f"browser-use execution failed: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    stdout = completed.stdout or ""
+    stderr = (completed.stderr or "").strip()
+    if completed.returncode != 0:
+        detail = stderr or stdout.strip() or f"exit code {completed.returncode}"
+        raise BrowserUseError(f"browser-use returned an error: {detail[:2000]}")
+
+    marker_line = next(
+        (line for line in reversed(stdout.splitlines()) if line.startswith(_RESULT_MARKER)),
+        None,
+    )
+    if marker_line is None:
+        raise BrowserUseError(
+            "browser-use completed without structured Ahmed Toolbox output"
+        )
+    try:
+        payload = json.loads(marker_line[len(_RESULT_MARKER) :])
+    except json.JSONDecodeError as exc:
+        raise BrowserUseError("browser-use returned malformed structured output") from exc
+    if not isinstance(payload, dict):
+        raise BrowserUseError("browser-use structured output must be an object")
+
+    resolved_url = _validate_public_url(str(payload.get("resolved_url") or source_url))
+    return {
+        "source_url": source_url,
+        "resolved_url": resolved_url,
+        "title": str(payload.get("title") or "").strip(),
+        "visible_text": str(payload.get("visible_text") or "")[:max_chars],
+        "retrieval_tool": "browser-use",
+        "mode": "read_only",
+        "provenance": {
+            "retrieval_tool": "browser-use",
+            "interaction_mode": "read_only",
+            "source_kind": "rendered_public_page",
+        },
+    }
