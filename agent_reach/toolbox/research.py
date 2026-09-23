@@ -1567,8 +1567,14 @@ class ResearchStore:
                                 "geography": evidence["geography"],
                                 "reference_period": evidence["reference_period"],
                                 "observation_type": evidence["observation_type"],
+                                "temporal_bucket": evidence["temporal_bucket"],
                                 "forecast_horizon": evidence["forecast_horizon"],
                                 "freshness_at_output": freshness_at_output,
+                                "latest_temporal_validity": (
+                                    self.get_latest_evidence_temporal_validity(
+                                        evidence["evidence_id"]
+                                    )
+                                ),
                                 "latest_freshness": self.get_latest_evidence_freshness(
                                     evidence["evidence_id"]
                                 ),
@@ -1577,6 +1583,7 @@ class ResearchStore:
                                 "publisher": source["publisher"],
                                 "publication_date": source["publication_date"],
                                 "data_cutoff": source["data_cutoff"],
+                                "observation_time": source["observation_time"],
                                 "representation_hash": source["representation_hash"],
                                 "content_hash_scope": source["content_hash_scope"],
                                 "retrieved_at": (
@@ -2353,6 +2360,16 @@ class ResearchStore:
                     (run_id,),
                 ).fetchall()
             ]
+            fusion_ids = [
+                str(row["fusion_id"])
+                for row in self._conn.execute(
+                    """
+                    SELECT fusion_id FROM temporal_fusions
+                    WHERE run_id = ? ORDER BY seq
+                    """,
+                    (run_id,),
+                ).fetchall()
+            ]
 
         return {
             "research_run": run,
@@ -2371,14 +2388,7 @@ class ResearchStore:
             "claims": [self.get_claim(item) for item in claim_ids],
             "outputs": [self.get_output(item) for item in output_ids],
             "temporal_fusions": [
-                self.get_temporal_fusion(str(row["fusion_id"]))
-                for row in self._conn.execute(
-                    """
-                    SELECT fusion_id FROM temporal_fusions
-                    WHERE run_id = ? ORDER BY seq
-                    """,
-                    (run_id,),
-                ).fetchall()
+                self.get_temporal_fusion(item) for item in fusion_ids
             ],
             "ledger": self.export_ledger_rows(run_id),
         }
