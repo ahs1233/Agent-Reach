@@ -205,10 +205,19 @@ class OrchestrationStore:
         allowed = [e for e in events if e["event_type"] == "TOOL_ALLOWED"]
         return {"tool_calls": len(allowed), "network_calls": sum(e["tool_name"] in NETWORK_TOOLS for e in allowed)}
 
-    def authorize_tool(self, orchestration_id: str, role: str, tool_name: str, arguments: dict[str, Any],\n                       effect_class: str | None = None) -> dict[str, Any]:
+    def authorize_tool(
+        self,
+        orchestration_id: str,
+        role: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        effect_class: str | None = None,
+    ) -> dict[str, Any]:
         run = self.get_run(orchestration_id)
         reason = None
-        effect = classify_tool_effect(tool_name)
+        effect = effect_class if effect_class is not None else classify_tool_effect(tool_name)
+        if effect is not None and effect not in EFFECT_CLASSES:
+            effect = None
         patterns = run["specialists"].get(role)
         if run["status"] != "ACTIVE":
             reason = "run_not_active"
@@ -230,14 +239,29 @@ class OrchestrationStore:
                 reason = "network_budget_exhausted"
         allowed = reason is None
         event = self.append_event(
-            orchestration_id, "TOOL_ALLOWED" if allowed else "TOOL_DENIED",
-            role=role, tool_name=tool_name, effect_class=effect,
+            orchestration_id,
+            "TOOL_ALLOWED" if allowed else "TOOL_DENIED",
+            role=role,
+            tool_name=tool_name,
+            effect_class=effect,
             payload={"argument_hash": _hash(arguments), "reason": reason},
         )
-        return {"allowed": allowed, "reason": reason, "effect_class": effect, "authorization_event_id": event["id"]}
+        return {
+            "allowed": allowed,
+            "reason": reason,
+            "effect_class": effect,
+            "authorization_event_id": event["id"],
+        }
 
-    def record_result(self, orchestration_id: str, authorization_event_id: int, role: str,
-                      tool_name: str, result: dict[str, Any]) -> None:
+    def record_result(
+        self,
+        orchestration_id: str,
+        authorization_event_id: int,
+        role: str,
+        tool_name: str,
+        result: dict[str, Any],
+        effect_class: str | None = None,
+    ) -> None:
         with self._connect() as conn:
             authorization = conn.execute(
                 """SELECT id, role, tool_name FROM orchestration_events
@@ -256,10 +280,20 @@ class OrchestrationStore:
             raise ValueError("result does not match authorized role/tool")
         if duplicate:
             raise ValueError("authorization already has a recorded result")
-        self.append_event(orchestration_id, "TOOL_RESULT", role=role, tool_name=tool_name,
-                          effect_class=classify_tool_effect(tool_name),
-                          payload={"authorization_event_id": authorization_event_id,
-                                   "result_hash": _hash(result), "is_error": bool(result.get("isError"))})
+        self.append_event(
+            orchestration_id,
+            "TOOL_RESULT",
+            role=role,
+            tool_name=tool_name,
+            effect_class=(
+                effect_class if effect_class is not None else classify_tool_effect(tool_name)
+            ),
+            payload={
+                "authorization_event_id": authorization_event_id,
+                "result_hash": _hash(result),
+                "is_error": bool(result.get("isError")),
+            },
+        )
 
     def unresolved_authorizations(self, orchestration_id: str) -> list[int]:
         events = self.list_events(orchestration_id)
