@@ -50,6 +50,113 @@ fi
 
 echo "Ahmed ToolBox Browser Use CLI/CDP smoke test passed"
 
+case "${AHMED_RUNTIME_ENABLED:-0}:${AHMED_ORCHESTRATION_ENABLED:-0}" in
+  1:*|true:*|yes:*|on:*|*:1|*:true|*:yes|*:on)
+    echo "Running Ahmed Runtime startup acceptance"
+    python - <<'PY'
+import json
+
+from agent_reach.toolbox.gateway import AhmedToolboxGateway
+
+gateway = AhmedToolboxGateway.from_environment()
+names = {tool["name"] for tool in gateway.list_tools()}
+required = {
+    "runtime_status",
+    "runtime_execute_workflow",
+    "runtime_delegate",
+    "runtime_memory_put",
+    "runtime_memory_search",
+    "runtime_session_search",
+    "runtime_skill_save",
+    "runtime_skill_list",
+    "runtime_skill_get",
+    "runtime_skill_execute",
+}
+missing = sorted(required - names)
+if missing:
+    raise SystemExit(f"Ahmed Runtime tools missing: {missing}")
+
+def payload(name, arguments):
+    result = gateway.call_tool(name, arguments)
+    if result.get("isError"):
+        raise SystemExit(f"{name} failed: {result}")
+    content = result.get("content") or []
+    if not content:
+        raise SystemExit(f"{name} returned no content")
+    return json.loads(content[0]["text"])
+
+status = payload("runtime_status", {})
+if status.get("status") != "ok":
+    raise SystemExit(f"runtime_status unhealthy: {status}")
+
+workflow = payload(
+    "runtime_execute_workflow",
+    {
+        "session_id": "__startup_runtime__",
+        "steps": [{"id": "doctor", "tool_name": "reach_doctor", "arguments": {}}],
+        "learn_as": "__startup_doctor_skill__",
+        "skill_description": "Railway startup acceptance health check.",
+    },
+)
+if workflow.get("status") != "ok":
+    raise SystemExit(f"runtime workflow smoke failed: {workflow}")
+
+skill = payload("runtime_skill_execute", {"name": "__startup_doctor_skill__"})
+if skill.get("status") != "ok":
+    raise SystemExit(f"runtime skill smoke failed: {skill}")
+
+payload(
+    "runtime_memory_put",
+    {
+        "key": "__startup_runtime_memory__",
+        "content": "Ahmed Runtime startup acceptance passed.",
+        "tags": ["startup", "runtime"],
+    },
+)
+memory = payload("runtime_memory_search", {"query": "startup acceptance", "limit": 5})
+if not memory.get("results"):
+    raise SystemExit("runtime memory smoke returned no results")
+
+if "orchestration_start" in names:
+    started = payload(
+        "orchestration_start",
+        {
+            "objective": "Railway startup runtime/orchestration acceptance",
+            "mode": "general",
+            "budget": {"tool_calls": 1, "network_calls": 0},
+        },
+    )
+    oid = started["orchestration_id"]
+    orchestrated = payload(
+        "runtime_execute_workflow",
+        {
+            "orchestration_id": oid,
+            "session_id": "__startup_orchestration__",
+            "steps": [
+                {
+                    "id": "doctor",
+                    "tool_name": "reach_doctor",
+                    "role": "orchestrator",
+                    "arguments": {},
+                }
+            ],
+        },
+    )
+    if orchestrated.get("status") != "ok":
+        raise SystemExit(f"orchestrated runtime smoke failed: {orchestrated}")
+    verification = payload("orchestration_verify", {"orchestration_id": oid})
+    if not verification.get("passed"):
+        raise SystemExit(f"orchestration verification failed: {verification}")
+    completed = payload("orchestration_complete", {"orchestration_id": oid})
+    if not completed.get("completed"):
+        raise SystemExit(f"orchestration completion failed: {completed}")
+
+print("__AHMED_RUNTIME_STARTUP_ACCEPTANCE__ok")
+PY
+    echo "Ahmed Runtime startup acceptance passed"
+    ;;
+esac
+
 if [ -n "${AHMED_TOOLBOX_BROWSER_E2E_URL:-}" ]; then
   echo "Running Ahmed ToolBox YouTube Browser Use E2E acceptance"
   python - <<'PY'
