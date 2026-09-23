@@ -183,6 +183,19 @@ def runtime_tool_specs() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "runtime_skill_rollback",
+            "description": "Create a new active revision by rolling a skill back to a known earlier workflow.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                    "name": {"type": "string", "minLength": 1, "maxLength": 80},
+                    "revision": {"type": "integer", "minimum": 1},
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
             "name": "runtime_skill_execute",
             "description": "Execute a stored procedural skill and automatically update its observed success score.",
             "inputSchema": {
@@ -275,6 +288,13 @@ def handle_runtime_tool(
 
     if name == "runtime_skill_get":
         return store.get_skill(str(arguments.get("name") or ""))
+
+    if name == "runtime_skill_rollback":
+        revision = arguments.get("revision")
+        return store.rollback_skill(
+            str(arguments.get("name") or ""),
+            int(revision) if revision is not None else None,
+        )
 
     if execute_step is None and name in {
         "runtime_execute_workflow", "runtime_delegate", "runtime_skill_execute"
