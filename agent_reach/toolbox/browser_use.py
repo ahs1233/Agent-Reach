@@ -158,9 +158,9 @@ wait_for_element("ytd-watch-flexy, ytd-watch-metadata", timeout=12)
 wait(3)
 resolved_url = js("location.href || ''") or {safe_url}
 {comment_block}
-title = js({{title_js}}) or ''
-description = js({{description_js}}) or ''
-visible_text = js({{visible_text_js}}) or ''
+title = js({title_js}) or ''
+description = js({description_js}) or ''
+visible_text = js({visible_text_js}) or ''
 payload = {{
     'resolved_url': resolved_url,
     'title': title,
