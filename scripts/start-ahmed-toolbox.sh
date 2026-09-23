@@ -55,6 +55,7 @@ case "${AHMED_RUNTIME_ENABLED:-0}:${AHMED_ORCHESTRATION_ENABLED:-0}" in
     echo "Running Ahmed Runtime startup acceptance"
     python - <<'PY'
 import json
+import os
 
 from agent_reach.toolbox.gateway import AhmedToolboxGateway
 
