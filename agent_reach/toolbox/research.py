@@ -23,6 +23,15 @@ from .source_independence import (
     assess_source_independence,
     normalize_publisher,
 )
+from .temporal import (
+    TEMPORAL_BUCKETS,
+    bounded_temporal_budget,
+    evaluate_temporal_validity,
+    final_live_refresh_gate,
+    normalize_temporal_bucket,
+    resolve_current_state_contradiction,
+    temporal_fusion,
+)
 
 OBSERVATION_TYPES = {
     "ACTUAL",
@@ -178,6 +187,8 @@ class ResearchStore:
             primary_source INTEGER,
             publication_date TEXT,
             data_cutoff TEXT,
+            observation_time TEXT,
+            temporal_bucket TEXT,
             first_retrieved_at TEXT NOT NULL,
             latest_retrieved_at TEXT NOT NULL,
             retrieval_tool TEXT NOT NULL,
@@ -254,6 +265,7 @@ class ResearchStore:
             geography TEXT,
             reference_period TEXT,
             observation_type TEXT NOT NULL,
+            temporal_bucket TEXT,
             forecast_horizon TEXT,
             definition TEXT,
             extraction_method TEXT,
@@ -394,9 +406,42 @@ class ResearchStore:
             FOREIGN KEY(independence_id)
                 REFERENCES source_independence_evaluations(independence_id)
         );
+
+        CREATE TABLE IF NOT EXISTS temporal_evaluations (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            temporal_id TEXT UNIQUE,
+            run_id TEXT NOT NULL,
+            evidence_id TEXT NOT NULL,
+            temporal_bucket TEXT NOT NULL,
+            validity_status TEXT NOT NULL,
+            validity_reason TEXT NOT NULL,
+            details_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES research_runs(run_id) ON DELETE CASCADE,
+            FOREIGN KEY(evidence_id) REFERENCES evidence_items(evidence_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_temporal_evidence
+        ON temporal_evaluations(evidence_id, seq);
+
+        CREATE TABLE IF NOT EXISTS temporal_fusions (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            fusion_id TEXT UNIQUE,
+            run_id TEXT NOT NULL,
+            classification TEXT NOT NULL,
+            result_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES research_runs(run_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_temporal_fusions_run
+        ON temporal_fusions(run_id, seq);
         """
         with self._lock, self._conn:
             self._conn.executescript(schema)
+            self._ensure_column("sources", "observation_time", "TEXT")
+            self._ensure_column("sources", "temporal_bucket", "TEXT")
+            self._ensure_column("evidence_items", "temporal_bucket", "TEXT")
             observation_type_added = self._ensure_column(
                 "claims",
                 "observation_type",
@@ -521,6 +566,8 @@ class ResearchStore:
         primary_source: bool | None = None,
         publication_date: str | None = None,
         data_cutoff: str | None = None,
+        observation_time: str | None = None,
+        temporal_bucket: str | None = None,
         canonical_url: str | None = None,
         discovered_by: str | None = None,
         source_family_id: str | None = None,
@@ -541,6 +588,11 @@ class ResearchStore:
         original = str(url).strip()
         digest = content_hash(content)
         when = retrieved_at or utc_now()
+        bucket = (
+            normalize_temporal_bucket(temporal_bucket)
+            if temporal_bucket is not None
+            else None
+        )
 
         with self._lock, self._conn:
             existing = self._conn.execute(
@@ -565,6 +617,8 @@ class ResearchStore:
                         primary_source = COALESCE(?, primary_source),
                         publication_date = COALESCE(?, publication_date),
                         data_cutoff = COALESCE(?, data_cutoff),
+                        observation_time = COALESCE(?, observation_time),
+                        temporal_bucket = COALESCE(?, temporal_bucket),
                         source_family_id = COALESCE(?, source_family_id),
                         freshness_score = COALESCE(?, freshness_score)
                     WHERE source_id = ?
@@ -579,6 +633,8 @@ class ResearchStore:
                         None if primary_source is None else int(primary_source),
                         publication_date,
                         data_cutoff,
+                        observation_time,
+                        bucket,
                         source_family_id,
                         freshness_score,
                         source_id,
@@ -601,13 +657,14 @@ class ResearchStore:
                     INSERT INTO sources(
                         source_id, canonical_url, original_url, publisher, source_type,
                         primary_source, publication_date, data_cutoff,
+                        observation_time, temporal_bucket,
                         first_retrieved_at, latest_retrieved_at,
                         retrieval_tool, retrieval_method, retrieval_status,
                         content_hash, version_number, previous_source_id,
                         source_family_id, freshness_score, metadata_json
                     )
                     VALUES(
-                        NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                        NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                     )
                     """,
                     (
@@ -618,6 +675,8 @@ class ResearchStore:
                         None if primary_source is None else int(primary_source),
                         publication_date,
                         data_cutoff,
+                        observation_time,
+                        bucket,
                         when,
                         when,
                         tool,
@@ -725,6 +784,8 @@ class ResearchStore:
                 ),
                 "publication_date": row["publication_date"],
                 "data_cutoff": row["data_cutoff"],
+                "observation_time": row["observation_time"],
+                "temporal_bucket": row["temporal_bucket"],
                 "first_retrieved_at": row["first_retrieved_at"],
                 "latest_retrieved_at": row["latest_retrieved_at"],
                 "retrieval_tool": row["retrieval_tool"],
@@ -914,6 +975,7 @@ class ResearchStore:
         unit: str | None = None,
         geography: str | None = None,
         reference_period: str | None = None,
+        temporal_bucket: str | None = None,
         forecast_horizon: str | None = None,
         definition: str | None = None,
         extraction_method: str | None = None,
@@ -927,8 +989,10 @@ class ResearchStore:
         with self._lock, self._conn:
             linked = self._conn.execute(
                 """
-                SELECT 1 FROM research_run_sources
-                WHERE run_id = ? AND source_id = ?
+                SELECT s.temporal_bucket
+                FROM research_run_sources rs
+                JOIN sources s ON s.source_id = rs.source_id
+                WHERE rs.run_id = ? AND rs.source_id = ?
                 """,
                 (run_id, source_id),
             ).fetchone()
@@ -936,6 +1000,17 @@ class ResearchStore:
                 raise ValueError(
                     f"source {source_id} is not linked to research run {run_id}"
                 )
+
+            inherited_bucket = (
+                str(linked["temporal_bucket"])
+                if linked["temporal_bucket"] is not None
+                else None
+            )
+            bucket = (
+                normalize_temporal_bucket(temporal_bucket)
+                if temporal_bucket is not None
+                else inherited_bucket
+            )
 
             value_num: float | None = None
             value_text: str | None = None
@@ -949,10 +1024,10 @@ class ResearchStore:
                 INSERT INTO evidence_items(
                     evidence_id, run_id, source_id, supporting_passage,
                     structured_fact_json, metric, value_num, value_text, unit,
-                    geography, reference_period, observation_type,
+                    geography, reference_period, observation_type, temporal_bucket,
                     forecast_horizon, definition, extraction_method, created_at
                 )
-                VALUES(NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES(NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -966,6 +1041,7 @@ class ResearchStore:
                     geography,
                     reference_period,
                     obs_type,
+                    bucket,
                     forecast_horizon,
                     definition,
                     extraction_method,
@@ -999,6 +1075,7 @@ class ResearchStore:
                 "geography": row["geography"],
                 "reference_period": row["reference_period"],
                 "observation_type": row["observation_type"],
+                "temporal_bucket": row["temporal_bucket"],
                 "forecast_horizon": row["forecast_horizon"],
                 "definition": row["definition"],
                 "extraction_method": row["extraction_method"],
@@ -1880,6 +1957,359 @@ class ResearchStore:
             return None
         return self.get_freshness_evaluation(str(row["freshness_id"]))
 
+    def evaluate_evidence_temporal_validity(
+        self,
+        evidence_id: str,
+        *,
+        temporal_bucket: str | None = None,
+        as_of: str | None = None,
+        freshness_policy: str | None = None,
+        max_age_seconds: int | float | None = None,
+        latest_known_cutoff: str | None = None,
+        authority_status: str | None = None,
+        provenance_complete: bool = True,
+        historiographical_conflict: bool = False,
+        later_evidence_changes_interpretation: bool | None = None,
+        still_in_force: bool | None = None,
+        current_reality_conflict: bool = False,
+    ) -> dict[str, Any]:
+        evidence = self.get_evidence(evidence_id)
+        source = self.get_source(
+            evidence["source_id"],
+            run_id=evidence["run_id"],
+        )
+        bucket_raw = temporal_bucket or evidence.get("temporal_bucket") or source.get(
+            "temporal_bucket"
+        )
+        if not bucket_raw:
+            raise ValueError(
+                "temporal_bucket is required on evidence/source or as an override"
+            )
+        bucket = normalize_temporal_bucket(str(bucket_raw))
+        authority = authority_status or source["metadata"].get("source_authority")
+        if authority is None:
+            authority = "PRIMARY" if source.get("primary_source") else "UNKNOWN"
+
+        result = evaluate_temporal_validity(
+            temporal_bucket=bucket,
+            data_cutoff=source.get("data_cutoff"),
+            publication_date=source.get("publication_date"),
+            retrieved_at=(
+                source["run_retrieval"]["occurred_at"]
+                if source.get("run_retrieval")
+                else source.get("latest_retrieved_at")
+            ),
+            as_of=as_of,
+            freshness_policy=freshness_policy,
+            max_age_seconds=max_age_seconds,
+            latest_known_cutoff=latest_known_cutoff,
+            authority_status=str(authority),
+            provenance_complete=bool(provenance_complete),
+            historiographical_conflict=bool(historiographical_conflict),
+            later_evidence_changes_interpretation=later_evidence_changes_interpretation,
+            still_in_force=still_in_force,
+            current_reality_conflict=bool(current_reality_conflict),
+        )
+
+        if bucket in {"LIVE", "RECENT"}:
+            policy = freshness_policy or (
+                "breaking_news" if bucket == "LIVE" else "custom_max_age"
+            )
+            recency = max_age_seconds
+            if policy == "custom_max_age" and recency is None:
+                recency = 14 * 24 * 60 * 60
+            persisted_freshness = self.evaluate_evidence_freshness(
+                evidence_id,
+                policy_name=policy,
+                as_of=as_of,
+                max_age_seconds=recency,
+                latest_known_cutoff=latest_known_cutoff,
+            )
+            result["freshness_id"] = persisted_freshness["freshness_id"]
+        else:
+            result["freshness_id"] = None
+
+        now = utc_now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO temporal_evaluations(
+                    temporal_id, run_id, evidence_id, temporal_bucket,
+                    validity_status, validity_reason, details_json, created_at
+                )
+                VALUES(NULL, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    evidence["run_id"],
+                    evidence_id,
+                    bucket,
+                    result["validity_status"],
+                    result["validity_reason"],
+                    _json_dumps(result),
+                    now,
+                ),
+            )
+            temporal_id = self._public_id("TV", int(cursor.lastrowid))
+            self._conn.execute(
+                "UPDATE temporal_evaluations SET temporal_id = ? WHERE seq = ?",
+                (temporal_id, cursor.lastrowid),
+            )
+        return self.get_temporal_evaluation(temporal_id)
+
+    def get_temporal_evaluation(self, temporal_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM temporal_evaluations WHERE temporal_id = ?",
+                (temporal_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"unknown temporal evaluation: {temporal_id}")
+        details = _json_loads(row["details_json"], {})
+        return {
+            "temporal_id": row["temporal_id"],
+            "run_id": row["run_id"],
+            "evidence_id": row["evidence_id"],
+            "temporal_bucket": row["temporal_bucket"],
+            "validity_status": row["validity_status"],
+            "validity_reason": row["validity_reason"],
+            "source_authority": details.get("source_authority"),
+            "freshness_id": details.get("freshness_id"),
+            "freshness": details.get("freshness"),
+            "historical_context_status": details.get("historical_context_status"),
+            "structural_status": details.get("structural_status"),
+            "created_at": row["created_at"],
+        }
+
+    def get_latest_evidence_temporal_validity(
+        self,
+        evidence_id: str,
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT temporal_id FROM temporal_evaluations
+                WHERE evidence_id = ?
+                ORDER BY seq DESC LIMIT 1
+                """,
+                (evidence_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self.get_temporal_evaluation(str(row["temporal_id"]))
+
+    def resolve_temporal_contradiction(
+        self,
+        run_id: str,
+        candidates: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        self._require_run(run_id)
+        enriched: list[dict[str, Any]] = []
+        for raw in candidates:
+            evidence_id = str(raw.get("evidence_id") or "").strip()
+            evidence = self.get_evidence(evidence_id)
+            if evidence["run_id"] != run_id:
+                raise ValueError(
+                    f"contradiction evidence {evidence_id} is not in run {run_id}"
+                )
+            source = self.get_source(evidence["source_id"], run_id=run_id)
+            temporal_eval = self.get_latest_evidence_temporal_validity(evidence_id)
+            freshness = self.get_latest_evidence_freshness(evidence_id)
+            bucket = (
+                raw.get("temporal_bucket")
+                or evidence.get("temporal_bucket")
+                or source.get("temporal_bucket")
+            )
+            if not bucket:
+                raise ValueError(
+                    f"temporal_bucket missing for contradiction evidence {evidence_id}"
+                )
+            authority = (
+                raw.get("source_authority")
+                or (temporal_eval or {}).get("source_authority")
+                or source["metadata"].get("source_authority")
+                or ("PRIMARY" if source.get("primary_source") else "UNKNOWN")
+            )
+            freshness_status = (
+                raw.get("freshness_status")
+                or (temporal_eval or {}).get("validity_status")
+                or (freshness or {}).get("status")
+                or "UNKNOWN"
+            )
+            enriched.append(
+                {
+                    **raw,
+                    "evidence_id": evidence_id,
+                    "temporal_bucket": bucket,
+                    "source_authority": authority,
+                    "freshness_status": freshness_status,
+                    "observation_time": (
+                        raw.get("observation_time")
+                        or source.get("observation_time")
+                        or source.get("data_cutoff")
+                    ),
+                    "data_cutoff": source.get("data_cutoff"),
+                    "retrieved_at": (
+                        source["run_retrieval"]["occurred_at"]
+                        if source.get("run_retrieval")
+                        else source.get("latest_retrieved_at")
+                    ),
+                }
+            )
+        result = resolve_current_state_contradiction(enriched)
+        result["run_id"] = run_id
+        return result
+
+    def create_temporal_fusion(
+        self,
+        run_id: str,
+        *,
+        evidence_ids: list[str],
+        historical_alignment: str,
+        structural_change: str,
+        persistence: str,
+        changed_now: str,
+        unchanged: str,
+        structural_constraints: list[str] | None = None,
+        contradicting_evidence_ids: list[str] | None = None,
+        falsifiers: list[str] | None = None,
+    ) -> dict[str, Any]:
+        self._require_run(run_id)
+        unique_ids = list(dict.fromkeys(str(item) for item in evidence_ids if str(item)))
+        if not unique_ids:
+            raise ValueError("temporal fusion requires at least one evidence_id")
+        buckets: dict[str, int] = {item: 0 for item in sorted(TEMPORAL_BUCKETS)}
+        for evidence_id in unique_ids:
+            evidence = self.get_evidence(evidence_id)
+            if evidence["run_id"] != run_id:
+                raise ValueError(
+                    f"fusion evidence {evidence_id} is not in run {run_id}"
+                )
+            source = self.get_source(evidence["source_id"], run_id=run_id)
+            raw_bucket = evidence.get("temporal_bucket") or source.get("temporal_bucket")
+            if not raw_bucket:
+                raise ValueError(
+                    f"temporal_bucket missing for fusion evidence {evidence_id}"
+                )
+            buckets[normalize_temporal_bucket(str(raw_bucket))] += 1
+
+        result = temporal_fusion(
+            historical_alignment=historical_alignment,
+            structural_change=structural_change,
+            persistence=persistence,
+            changed_now=changed_now,
+            unchanged=unchanged,
+            structural_constraints=structural_constraints,
+            contradicting_evidence_ids=contradicting_evidence_ids,
+            falsifiers=falsifiers,
+        )
+        result["run_id"] = run_id
+        result["evidence_ids"] = unique_ids
+        result["bucket_counts"] = buckets
+        result["coverage"] = {
+            "live": buckets["LIVE"] > 0,
+            "recent": buckets["RECENT"] > 0,
+            "historical": buckets["HISTORICAL"] > 0,
+            "structural": buckets["STRUCTURAL"] > 0,
+        }
+
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO temporal_fusions(
+                    fusion_id, run_id, classification, result_json, created_at
+                )
+                VALUES(NULL, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    result["classification"],
+                    _json_dumps(result),
+                    utc_now(),
+                ),
+            )
+            fusion_id = self._public_id("TF", int(cursor.lastrowid))
+            self._conn.execute(
+                "UPDATE temporal_fusions SET fusion_id = ? WHERE seq = ?",
+                (fusion_id, cursor.lastrowid),
+            )
+        return self.get_temporal_fusion(fusion_id)
+
+    def get_temporal_fusion(self, fusion_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM temporal_fusions WHERE fusion_id = ?",
+                (fusion_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"unknown temporal fusion: {fusion_id}")
+        result = _json_loads(row["result_json"], {})
+        return {
+            "fusion_id": row["fusion_id"],
+            "run_id": row["run_id"],
+            "classification": row["classification"],
+            **result,
+            "created_at": row["created_at"],
+        }
+
+    def final_live_refresh_gate(
+        self,
+        evidence_id: str,
+        *,
+        as_of: str | None = None,
+        max_age_seconds: int | float = 6 * 60 * 60,
+        source_authority: str | None = None,
+    ) -> dict[str, Any]:
+        evidence = self.get_evidence(evidence_id)
+        source = self.get_source(evidence["source_id"], run_id=evidence["run_id"])
+        bucket = evidence.get("temporal_bucket") or source.get("temporal_bucket")
+        if not bucket:
+            raise ValueError("temporal_bucket is required for final live refresh gate")
+        refresh_events = [
+            item
+            for item in source.get("retrieval_history", [])
+            if str(item.get("stage") or "").upper() == "FINAL_LIVE_REFRESH"
+            and str(item.get("status") or "").upper() == "SUCCESS"
+        ]
+        refreshed_at = (
+            str(refresh_events[-1].get("occurred_at"))
+            if refresh_events
+            else None
+        )
+        authority = (
+            source_authority
+            or source["metadata"].get("source_authority")
+            or ("PRIMARY" if source.get("primary_source") else "UNKNOWN")
+        )
+        result = final_live_refresh_gate(
+            temporal_bucket=str(bucket),
+            source_authority=str(authority),
+            data_cutoff=source.get("data_cutoff"),
+            publication_date=source.get("publication_date"),
+            refreshed_at=refreshed_at,
+            has_final_refresh_event=bool(refresh_events),
+            as_of=as_of,
+            max_age_seconds=max_age_seconds,
+        )
+        return {
+            "run_id": evidence["run_id"],
+            "evidence_id": evidence_id,
+            "source_id": source["source_id"],
+            **result,
+        }
+
+    @staticmethod
+    def temporal_budget(
+        *,
+        max_total_retrieval_calls: int = 12,
+        max_calls_per_lane: int = 3,
+        max_fallback_attempts_per_source: int = 5,
+    ) -> dict[str, int]:
+        return bounded_temporal_budget(
+            max_total_retrieval_calls=max_total_retrieval_calls,
+            max_calls_per_lane=max_calls_per_lane,
+            max_fallback_attempts_per_source=max_fallback_attempts_per_source,
+        )
+
     def export_run(self, run_id: str) -> dict[str, Any]:
         run = self.get_run(run_id)
         with self._lock:
@@ -1932,11 +2362,24 @@ class ResearchStore:
                 {
                     **self.get_evidence(item),
                     "latest_freshness": self.get_latest_evidence_freshness(item),
+                    "latest_temporal_validity": (
+                        self.get_latest_evidence_temporal_validity(item)
+                    ),
                 }
                 for item in evidence_ids
             ],
             "claims": [self.get_claim(item) for item in claim_ids],
             "outputs": [self.get_output(item) for item in output_ids],
+            "temporal_fusions": [
+                self.get_temporal_fusion(str(row["fusion_id"]))
+                for row in self._conn.execute(
+                    """
+                    SELECT fusion_id FROM temporal_fusions
+                    WHERE run_id = ? ORDER BY seq
+                    """,
+                    (run_id,),
+                ).fetchall()
+            ],
             "ledger": self.export_ledger_rows(run_id),
         }
 
@@ -1969,6 +2412,8 @@ class ResearchStore:
             s.primary_source,
             s.publication_date,
             s.data_cutoff,
+            s.observation_time,
+            COALESCE(e.temporal_bucket, s.temporal_bucket) AS temporal_bucket,
             COALESCE(re.occurred_at, s.latest_retrieved_at) AS run_retrieved_at,
             COALESCE(re.tool, s.retrieval_tool) AS run_retrieval_tool,
             COALESCE(re.method, s.retrieval_method) AS run_retrieval_method,
@@ -2026,6 +2471,8 @@ class ResearchStore:
                     ),
                     "publication_date": row["publication_date"],
                     "data_cutoff": row["data_cutoff"],
+                    "observation_time": row["observation_time"],
+                    "temporal_bucket": row["temporal_bucket"],
                     "retrieved_at": row["run_retrieved_at"],
                     "retrieval_tool": row["run_retrieval_tool"],
                     "retrieval_method": row["run_retrieval_method"],
@@ -2092,6 +2539,18 @@ class ResearchStore:
                     (run_id,),
                 ).fetchone()["n"]
             )
+            invalid_temporal_bucket = int(
+                self._conn.execute(
+                    """
+                    SELECT COUNT(*) AS n
+                    FROM evidence_items
+                    WHERE run_id = ?
+                      AND temporal_bucket IS NOT NULL
+                      AND temporal_bucket NOT IN ('LIVE','RECENT','HISTORICAL','STRUCTURAL')
+                    """,
+                    (run_id,),
+                ).fetchone()["n"]
+            )
             duplicate_versions = int(
                 self._conn.execute(
                     """
@@ -2112,6 +2571,7 @@ class ResearchStore:
             "sources_have_tool_and_retrieval_time": source_missing_retrieval == 0,
             "publication_date_and_data_cutoff_are_separate": True,
             "observation_type_stored": invalid_observation_type == 0,
+            "temporal_metadata_valid": invalid_temporal_bucket == 0,
             "unchanged_source_deduplication": duplicate_versions == 0,
             "ledger_export_available": ledger_rows >= 0,
         }
@@ -2124,6 +2584,7 @@ class ResearchStore:
                 "evidence_without_source": evidence_without_source,
                 "sources_missing_retrieval_provenance": source_missing_retrieval,
                 "invalid_observation_type": invalid_observation_type,
+                "invalid_temporal_bucket": invalid_temporal_bucket,
                 "duplicate_source_versions": duplicate_versions,
                 "ledger_rows": ledger_rows,
             },
