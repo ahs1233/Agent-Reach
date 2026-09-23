@@ -521,8 +521,8 @@ def execute_workflow(
 
     def invoke(step: dict[str, Any]) -> dict[str, Any]:
         call_started = time.monotonic()
-        arguments = resolve_step_references(step["arguments"], completed)
         try:
+            arguments = resolve_step_references(step["arguments"], completed)
             result = execute_tool(step["tool_name"], arguments, step["role"])
         except Exception as exc:  # noqa: BLE001 - execution boundary
             result = {
@@ -542,11 +542,24 @@ def execute_workflow(
     try:
         while pending or running:
             if time.monotonic() >= deadline:
-                for future in running:
+                for future, (step_id, _) in list(running.items()):
                     future.cancel()
-                for step_id in list(pending):
+                    step = next(item for item in normalized if item["id"] == step_id)
                     completed[step_id] = {
                         "id": step_id,
+                        "tool_name": step["tool_name"],
+                        "role": step["role"],
+                        "status": "skipped",
+                        "reason": "workflow_timeout",
+                    }
+                    failed.add(step_id)
+                running.clear()
+                for step_id in list(pending):
+                    step = pending[step_id]
+                    completed[step_id] = {
+                        "id": step_id,
+                        "tool_name": step["tool_name"],
+                        "role": step["role"],
                         "status": "skipped",
                         "reason": "workflow_timeout",
                     }
@@ -656,9 +669,14 @@ def execute_delegation(
             task_id = futures[future]
             try:
                 outcome = future.result()
+                outcome_status = str(outcome.get("status") or "error")
                 results[task_id] = {
                     "id": task_id,
-                    "status": "ok" if outcome.get("status") == "ok" else "partial",
+                    "status": (
+                        "ok" if outcome_status == "ok"
+                        else "error" if outcome_status == "error"
+                        else "partial"
+                    ),
                     "result": _compact(outcome),
                 }
             except Exception as exc:  # noqa: BLE001
