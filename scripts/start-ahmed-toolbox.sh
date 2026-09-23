@@ -530,12 +530,14 @@ esac
 
 case "${AHMED_DUAL_TEMPORAL_LIVE_ACCEPTANCE:-0}" in
   1|true|yes|on)
-    echo "Running Ahmed Dual-Temporal live-network acceptance"
-    if python scripts/dual-temporal-live-acceptance.py; then
-      echo "Ahmed Dual-Temporal live-network acceptance passed"
-    else
-      echo "Ahmed Dual-Temporal live-network acceptance failed (non-fatal)" >&2
-    fi
+    echo "Starting Ahmed Dual-Temporal live-network acceptance in background"
+    (
+      if python scripts/dual-temporal-live-acceptance.py; then
+        echo "Ahmed Dual-Temporal live-network acceptance passed"
+      else
+        echo "Ahmed Dual-Temporal live-network acceptance failed (non-fatal)" >&2
+      fi
+    ) &
     ;;
 esac
 
