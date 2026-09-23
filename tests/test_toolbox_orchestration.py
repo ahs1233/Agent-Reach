@@ -233,3 +233,47 @@ def test_handoff_contains_verification_and_journal_head(tmp_path):
     assert handoff["schema"] == "ahmed-orchestration-handoff/v1"
     assert handoff["journal_head"]
     assert handoff["verification"]["passed"] is True
+
+
+def test_result_requires_matching_authorization(tmp_path):
+    store = OrchestrationStore(str(tmp_path / "orch.db"))
+    run = store.create_run("authorization binding", mode="general")
+    oid = run["orchestration_id"]
+    try:
+        store.record_result(oid, 999999, "orchestrator", "reach_doctor", {"isError": False})
+    except ValueError as exc:
+        assert "matching TOOL_ALLOWED" in str(exc)
+    else:
+        raise AssertionError("unmatched result must be rejected")
+
+
+def test_duplicate_result_is_rejected(tmp_path):
+    store = OrchestrationStore(str(tmp_path / "orch.db"))
+    run = store.create_run("single result", mode="general")
+    oid = run["orchestration_id"]
+    auth = store.authorize_tool(oid, "orchestrator", "reach_doctor", {})
+    store.record_result(
+        oid, auth["authorization_event_id"], "orchestrator", "reach_doctor",
+        {"isError": False},
+    )
+    try:
+        store.record_result(
+            oid, auth["authorization_event_id"], "orchestrator", "reach_doctor",
+            {"isError": False},
+        )
+    except ValueError as exc:
+        assert "already has a recorded result" in str(exc)
+    else:
+        raise AssertionError("duplicate result must be rejected")
+
+
+def test_verification_fails_with_unresolved_authorization(tmp_path):
+    store = OrchestrationStore(str(tmp_path / "orch.db"))
+    run = store.create_run("unresolved", mode="general")
+    oid = run["orchestration_id"]
+    store.authorize_tool(oid, "orchestrator", "reach_doctor", {})
+    from agent_reach.toolbox.orchestration import build_verification_report
+
+    report = build_verification_report(store, oid)
+    assert report["passed"] is False
+    assert report["checks"]["all_authorizations_resolved"] is False
