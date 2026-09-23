@@ -21,11 +21,13 @@ ENV PATH="/opt/venv/bin:$PATH"
 COPY pyproject.toml README.md ./
 COPY agent_reach ./agent_reach
 COPY config ./config
+COPY scripts ./scripts
 COPY scripts/start-ahmed-toolbox.sh /usr/local/bin/start-ahmed-toolbox
 
 RUN pip install --no-cache-dir ".[interactive-browser]" \
     && command -v browser-use \
     && command -v chromium \
+    && test -f /app/scripts/dual-temporal-live-acceptance.py \
     && chmod +x /usr/local/bin/start-ahmed-toolbox \
     && npm install -g mcporter@0.13.13
 
