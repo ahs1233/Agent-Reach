@@ -26,9 +26,9 @@ import requests
 from agent_reach import AgentReach
 from agent_reach.channels.web import WebChannel
 
-from .research import ResearchStore
 from .orchestration import OrchestrationStore
 from .orchestration_mcp import handle_orchestration_tool, orchestration_tool_specs
+from .research import ResearchStore
 from .research_mcp import handle_research_tool, research_tool_specs
 from .retrieval import retrieve_with_fallback
 from .video import ingest_media
