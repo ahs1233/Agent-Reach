@@ -23,16 +23,29 @@ Properties:
 
 This captures the main context-efficiency benefit of Hermes `execute_code` without exposing arbitrary Python execution.
 
-### 2. Isolated delegation
+### 2. Isolated delegation and real child agents
 
-`runtime_delegate` runs multiple specialist workstreams concurrently.
+`runtime_delegate` supports two execution modes:
+
+1. deterministic specialist workflow DAGs; and
+2. true model-backed child agents with isolated conversation context.
+
+Model-backed children use an operator-configured OpenAI-compatible endpoint. Each
+child receives only the tool schemas allowed by its orchestration role plus an
+optional additional tool allowlist. Every tool call is executed through the same
+Ahmed orchestration authorization path as a normal run.
 
 When a parent `orchestration_id` is supplied, every delegated workstream receives:
 - a distinct child orchestration id;
-- an independent tool/network budget;
+- an independent tool/network budget whose aggregate allocation cannot exceed
+  the parent's remaining budget;
 - an independent hash-linked journal;
 - the parent's specialist policy and effect ceiling;
 - only the linked Research Engine run is shared.
+
+Intermediate child tool traffic remains inside the child context. The parent gets
+the final bounded result/summary plus audit identifiers, not the child's complete
+conversation.
 
 The parent journal records `SUBAGENT_SPAWNED` and `SUBAGENT_FINISHED` events.
 
@@ -56,17 +69,24 @@ Successful workflows can be captured with `learn_as` or explicitly saved with `r
 
 Skills:
 - contain validated workflow DAGs;
+- can be learned only from a successfully completed workflow via `learn_as`;
 - are versioned when the procedure changes;
-- retain success/failure counters;
+- reset active success/failure evidence when a new revision changes the procedure;
+- retain per-revision outcome history;
 - use a conservative Bayesian observed-success score;
-- update outcome statistics automatically after `runtime_skill_execute`.
+- update outcome statistics automatically after `runtime_skill_execute`;
+- support auditable rollback, which creates a new monotonic revision rather than
+  deleting history.
 
-The runtime does not autonomously overwrite a procedure merely because one new attempt exists. This is intentional protection against self-corruption.
+The runtime does not promote a failed workflow and does not let a fresh revision
+inherit the reputation of the previous procedure. This is intentional protection
+against self-corruption.
 
 MCP tools:
 - `runtime_skill_save`
 - `runtime_skill_list`
 - `runtime_skill_get`
+- `runtime_skill_rollback`
 - `runtime_skill_execute`
 
 ### 5. MCP trust/effect gate
@@ -97,9 +117,19 @@ Enable explicitly:
 ```bash
 AHMED_RUNTIME_ENABLED=1
 AHMED_RUNTIME_DB_PATH=/data/ahmed-runtime.db
+
+# Optional: true model-backed child agents
+AHMED_SUBAGENT_BASE_URL=https://provider.example/v1
+AHMED_SUBAGENT_API_KEY=...
+AHMED_SUBAGENT_MODEL=...
+AHMED_SUBAGENT_TIMEOUT_SECONDS=60
+AHMED_SUBAGENT_MAX_TURNS=8
+AHMED_SUBAGENT_MAX_TOOL_CALLS=30
 ```
 
 Runtime is also enabled automatically when `AHMED_ORCHESTRATION_ENABLED=1`.
+Model-provider secrets are read only from process environment and are never added
+to child prompts or tool arguments.
 
 Remote MCP example:
 
@@ -133,3 +163,19 @@ Hermes remains an independent upstream project. Ahmed Toolbox does not claim com
 ## Quality target
 
 The target is feature-quality parity for the selected primitives, not source-code parity. Ahmed Toolbox adds its own Research Engine evidence controls, orchestration journal, source provenance, freshness, source independence, and PanWatch integration on top of these runtime primitives.
+
+
+## Production acceptance (2026-09-23)
+
+The Railway production deployment runs a startup acceptance gate whenever Ahmed
+Runtime is enabled. Deployment fails closed if the core runtime surface is not
+available or if workflow/memory/skill/orchestration smoke checks fail.
+
+When a model provider is configured, startup additionally creates an isolated
+child agent, exposes only `reach_doctor`, requires a real model tool call, and
+verifies that exactly one tool call is accounted for in the child's orchestration
+budget/journal before the MCP server begins listening.
+
+The production acceptance marker is:
+
+`__AHMED_MODEL_SUBAGENT_STARTUP_ACCEPTANCE__ok`
