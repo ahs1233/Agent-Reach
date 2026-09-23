@@ -217,3 +217,42 @@ def test_delegation_normalizes_missing_ids_and_caps_parent_budget(tmp_path):
     ]
     assert sum(item["run"]["budget"]["tool_calls"] for item in child_statuses) == 1
     assert sum(item["usage"]["tool_calls"] for item in child_statuses) <= 1
+
+
+def test_skill_revision_resets_score_and_can_roll_back(tmp_path):
+    gateway = _gateway(tmp_path)
+    _payload(gateway.call_tool("runtime_skill_save", {
+        "name": "adaptive-skill",
+        "description": "v1",
+        "workflow": [{"id": "doctor", "tool_name": "reach_doctor"}],
+    }))
+    _payload(gateway.call_tool("runtime_skill_execute", {"name": "adaptive-skill"}))
+    v1 = _payload(gateway.call_tool("runtime_skill_get", {"name": "adaptive-skill"}))
+    assert v1["revision"] == 1
+    assert v1["successes"] == 1
+    assert v1["score"] > 0.5
+    assert v1["recent_outcomes"][0]["revision"] == 1
+
+    v2 = _payload(gateway.call_tool("runtime_skill_save", {
+        "name": "adaptive-skill",
+        "description": "v2",
+        "workflow": [
+            {"id": "doctor-a", "tool_name": "reach_doctor"},
+            {"id": "doctor-b", "tool_name": "reach_doctor", "depends_on": ["doctor-a"]},
+        ],
+        "change_note": "candidate improvement",
+    }))
+    assert v2["revision"] == 2
+    assert v2["successes"] == 0
+    assert v2["failures"] == 0
+    assert v2["score"] == 0.5
+
+    rolled = _payload(gateway.call_tool("runtime_skill_rollback", {
+        "name": "adaptive-skill",
+        "revision": 1,
+    }))
+    assert rolled["revision"] == 3
+    assert rolled["description"] == "v1"
+    assert len(rolled["workflow"]) == 1
+    assert rolled["successes"] == 0
+    assert rolled["score"] == 0.5
