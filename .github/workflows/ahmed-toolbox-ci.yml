@@ -92,3 +92,30 @@ jobs:
           data = json.load(open("coverage-toolbox.json", encoding="utf-8"))
           print(f"TOOLBOX_COVERAGE_BASELINE={data['totals']['percent_covered']:.2f}")
           PY
+
+
+  stress-core:
+    name: Core stress suite
+    needs: full-regression
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -c constraints.txt -e ".[dev]"
+
+      - name: Stress harness lint
+        run: |
+          ruff check scripts/toolbox_stress.py
+          ruff format --check scripts/toolbox_stress.py
+
+      - name: Core stress suite
+        run: python scripts/toolbox_stress.py
