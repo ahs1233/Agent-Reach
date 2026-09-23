@@ -50,6 +50,8 @@ def runtime_tool_specs() -> list[dict[str, Any]]:
                     "fail_fast": {"type": "boolean", "default": True},
                     "learn_as": {"type": "string", "maxLength": 80},
                     "skill_description": {"type": "string", "maxLength": 2000},
+                    "auto_learn": {"type": "boolean", "default": true},
+                    "auto_learn_threshold": {"type": "integer", "minimum": 2, "maximum": 20, "default": 3},
                 },
                 "additionalProperties": False,
             },
@@ -173,6 +175,15 @@ def runtime_tool_specs() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "runtime_skill_candidates",
+            "description": "Inspect repeated workflow candidates and whether they have been auto-promoted into skills.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}},
+                "additionalProperties": False,
+            },
+        },
+        {
             "name": "runtime_skill_get",
             "description": "Get the active revision, workflow, and observed outcomes for one runtime skill.",
             "inputSchema": {
@@ -286,6 +297,9 @@ def handle_runtime_tool(
     if name == "runtime_skill_list":
         return {"skills": store.list_skills(int(arguments.get("limit") or 50))}
 
+    if name == "runtime_skill_candidates":
+        return {"candidates": store.list_skill_candidates(int(arguments.get("limit") or 50))}
+
     if name == "runtime_skill_get":
         return store.get_skill(str(arguments.get("name") or ""))
 
@@ -342,6 +356,13 @@ def handle_runtime_tool(
             kind="workflow",
             metadata={"workflow_hash": result["workflow_hash"], "status": result["status"]},
         )
+        if bool(arguments.get("auto_learn", True)):
+            candidate = store.observe_workflow(
+                steps,
+                success=result["status"] == "ok",
+                promotion_threshold=int(arguments.get("auto_learn_threshold") or 3),
+            )
+            result["learning_candidate"] = candidate
         learn_as = str(arguments.get("learn_as") or "").strip()
         if learn_as and result["status"] == "ok":
             skill = store.save_skill(
@@ -371,10 +392,21 @@ def handle_runtime_tool(
         )
         success = result["status"] == "ok"
         stats = store.record_skill_outcome(skill_name, success)
+        recovery = None
+        if not success:
+            recovery = store.maybe_auto_rollback_skill(skill_name)
+        active = store.get_skill(skill_name)
         result.update({
             "session_id": session_id,
-            "skill": {"name": skill_name, "revision": skill["revision"], "score": stats["score"]},
+            "skill": {
+                "name": skill_name,
+                "executed_revision": skill["revision"],
+                "active_revision": active["revision"],
+                "score": active["score"],
+            },
         })
+        if recovery is not None:
+            result["auto_rollback"] = recovery
         store.record_session(
             session_id,
             json.dumps(result, ensure_ascii=False, default=str),
