@@ -35,6 +35,7 @@ from .orchestration_mcp import handle_orchestration_tool, orchestration_tool_spe
 from .research import ResearchStore
 from .research_mcp import handle_research_tool, research_tool_specs
 from .retrieval import retrieve_with_fallback
+from .temporal_mcp import handle_temporal_tool, temporal_tool_specs
 from .runtime import RuntimeStore
 from .runtime_mcp import handle_runtime_tool, runtime_tool_specs
 from .subagent import SubagentModelClient, SubagentModelError
@@ -586,6 +587,7 @@ class AhmedToolboxGateway:
         tools = list(self._local_tool_specs())
         if self.research_enabled:
             tools.extend(research_tool_specs())
+            tools.extend(temporal_tool_specs())
         if self.orchestration_enabled:
             tools.extend(orchestration_tool_specs())
         if self.runtime_enabled:
@@ -852,6 +854,21 @@ class AhmedToolboxGateway:
             if research_result is not None:
                 return self._text_result(
                     json.dumps(research_result, ensure_ascii=False, default=str)
+                )
+            try:
+                temporal_result = handle_temporal_tool(
+                    self.research_store,
+                    name,
+                    arguments,
+                )
+            except (TypeError, ValueError) as exc:
+                return self._text_result(
+                    f"Research temporal error: {exc}",
+                    is_error=True,
+                )
+            if temporal_result is not None:
+                return self._text_result(
+                    json.dumps(temporal_result, ensure_ascii=False, default=str)
                 )
 
         if name == "reach_doctor":
