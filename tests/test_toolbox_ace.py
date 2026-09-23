@@ -581,10 +581,12 @@ def test_research_records_research_engine_provenance(
     assert "question_hook" in (
         finding["metadata"]["signals"]
     )
-    ledger = research.export_ledger_rows(
-        result["research_run_id"]
+    evidence = research.get_evidence(
+        finding["evidence_ids"][0]
     )
-    assert ledger
+    assert evidence["run_id"] == result["research_run_id"]
+    assert evidence["source_id"]
+    assert evidence["observation_type"] == "ACTUAL"
 
 
 def test_generate_creates_required_mvp_outputs(
