@@ -169,7 +169,7 @@ def retrieve_with_fallback(
                     "duration_ms": round(elapsed_ms, 3),
                     "content_length": 0,
                     "missing_terms": [],
-                    "next_backend": next_backend,
+                    "next_backend": None,
                 }
             )
             continue
@@ -279,6 +279,8 @@ def retrieve_with_fallback(
                 )
                 attempts.append(
                     {
+                        "attempt_index": len(attempts) + 1,
+                        "started_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
                         "state": "TARGETED_SEARCH",
                         "tool": str(discovery_tool),
                         "method": "targeted_search",
@@ -290,12 +292,15 @@ def retrieve_with_fallback(
                         "duration_ms": round(elapsed_ms, 3),
                         "content_length": 0,
                         "missing_terms": [],
+                        "next_backend": None,
                     }
                 )
             elif detail.strip():
                 alternative_discovery = detail[:max_chars]
                 attempts.append(
                     {
+                        "attempt_index": len(attempts) + 1,
+                        "started_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
                         "state": "TARGETED_SEARCH",
                         "tool": str(discovery_tool),
                         "method": "targeted_search",
@@ -305,11 +310,14 @@ def retrieve_with_fallback(
                         "duration_ms": round(elapsed_ms, 3),
                         "content_length": len(alternative_discovery),
                         "missing_terms": [],
+                        "next_backend": None,
                     }
                 )
             else:
                 attempts.append(
                     {
+                        "attempt_index": len(attempts) + 1,
+                        "started_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
                         "state": "TARGETED_SEARCH",
                         "tool": str(discovery_tool),
                         "method": "targeted_search",
@@ -319,6 +327,7 @@ def retrieve_with_fallback(
                         "duration_ms": round(elapsed_ms, 3),
                         "content_length": 0,
                         "missing_terms": [],
+                        "next_backend": None,
                     }
                 )
 
