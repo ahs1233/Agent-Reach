@@ -81,3 +81,87 @@ def test_journal_is_hash_linked(tmp_path):
     run = store.create_run("journal", mode="general")
     store.authorize_tool(run["orchestration_id"], "orchestrator", "reach_doctor", {})
     assert store.verify_journal(run["orchestration_id"])["passed"] is True
+
+
+def test_budget_exhaustion_denies_additional_calls(tmp_path):
+    gateway = AhmedToolboxGateway(
+        agent_reach=FakeReach(),
+        research_store=ResearchStore(str(tmp_path / "research.db")),
+        orchestration_store=OrchestrationStore(str(tmp_path / "orch.db")),
+        orchestration_enabled=True,
+    )
+    oid = _payload(gateway.call_tool("orchestration_start", {
+        "objective": "budget", "mode": "general",
+        "budget": {"tool_calls": 1, "network_calls": 0},
+    }))["orchestration_id"]
+    first = _payload(gateway.call_tool("orchestration_execute", {
+        "orchestration_id": oid, "role": "orchestrator",
+        "tool_name": "reach_doctor", "arguments": {},
+    }))
+    second = _payload(gateway.call_tool("orchestration_execute", {
+        "orchestration_id": oid, "role": "orchestrator",
+        "tool_name": "reach_doctor", "arguments": {},
+    }))
+    assert first["executed"] is True
+    assert second["executed"] is False
+    assert second["authorization"]["reason"] == "tool_budget_exhausted"
+
+
+def test_role_boundary_denies_cross_lane_tool(tmp_path):
+    gateway = AhmedToolboxGateway(
+        agent_reach=FakeReach(),
+        research_store=ResearchStore(str(tmp_path / "research.db")),
+        orchestration_store=OrchestrationStore(str(tmp_path / "orch.db")),
+        orchestration_enabled=True,
+    )
+    oid = _payload(gateway.call_tool("orchestration_start", {
+        "objective": "role boundary", "mode": "general",
+    }))["orchestration_id"]
+    denied = _payload(gateway.call_tool("orchestration_execute", {
+        "orchestration_id": oid, "role": "discoverer",
+        "tool_name": "reach_doctor", "arguments": {},
+    }))
+    assert denied["executed"] is False
+    assert denied["authorization"]["reason"] == "tool_not_allowed_for_role"
+
+
+def test_research_run_scope_cannot_be_swapped(tmp_path):
+    gateway = AhmedToolboxGateway(
+        agent_reach=FakeReach(),
+        research_store=ResearchStore(str(tmp_path / "research.db")),
+        orchestration_store=OrchestrationStore(str(tmp_path / "orch.db")),
+        orchestration_enabled=True,
+    )
+    started = _payload(gateway.call_tool("orchestration_start", {
+        "objective": "scope research",
+    }))
+    denied = _payload(gateway.call_tool("orchestration_execute", {
+        "orchestration_id": started["orchestration_id"], "role": "evidence_analyst",
+        "tool_name": "research_record_source",
+        "arguments": {
+            "run_id": "run_attacker",
+            "url": "https://example.com",
+            "content": "x",
+            "retrieval_tool": "test",
+            "retrieval_method": "test",
+        },
+    }))
+    assert denied["executed"] is False
+    assert denied["reason"] == "research_run_mismatch"
+
+
+def test_complete_refuses_unverified_research(tmp_path):
+    gateway = AhmedToolboxGateway(
+        agent_reach=FakeReach(),
+        research_store=ResearchStore(str(tmp_path / "research.db")),
+        orchestration_store=OrchestrationStore(str(tmp_path / "orch.db")),
+        orchestration_enabled=True,
+    )
+    oid = _payload(gateway.call_tool("orchestration_start", {
+        "objective": "must verify",
+    }))["orchestration_id"]
+    result = _payload(gateway.call_tool("orchestration_complete", {
+        "orchestration_id": oid,
+    }))
+    assert result["completed"] is False
+    assert result["verification"]["passed"] is False
