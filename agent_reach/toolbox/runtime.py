@@ -29,6 +29,12 @@ _MAX_STEPS = 50
 _MAX_PARALLEL = 8
 _MAX_RESULT_CHARS = 24_000
 _STEP_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
+_SKILL_TRUST_MIN_SUCCESSES = 10
+_SKILL_TRUST_MIN_RECENT_RUNS = 10
+_SKILL_TRUST_SUCCESS_RATE = 0.90
+_SKILL_DEMOTE_WINDOW = 10
+_SKILL_DEMOTE_SUCCESS_RATE = 0.70
+_SKILL_PATHOLOGICAL_P95_MS = 120_000.0
 
 
 def _now() -> str:
@@ -235,7 +241,9 @@ class RuntimeStore:
                   name TEXT NOT NULL,
                   revision INTEGER NOT NULL,
                   success INTEGER NOT NULL,
-                  occurred_at TEXT NOT NULL
+                  occurred_at TEXT NOT NULL,
+                  audited_valid INTEGER,
+                  duration_ms REAL
                 );
                 CREATE INDEX IF NOT EXISTS idx_runtime_skill_outcomes
                   ON runtime_skill_outcomes(name, revision, id);
@@ -250,6 +258,14 @@ class RuntimeStore:
                 );
                 """
             )
+            outcome_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(runtime_skill_outcomes)").fetchall()
+            }
+            if "audited_valid" not in outcome_columns:
+                conn.execute("ALTER TABLE runtime_skill_outcomes ADD COLUMN audited_valid INTEGER")
+            if "duration_ms" not in outcome_columns:
+                conn.execute("ALTER TABLE runtime_skill_outcomes ADD COLUMN duration_ms REAL")
             try:
                 conn.execute(
                     "CREATE VIRTUAL TABLE IF NOT EXISTS runtime_session_fts "
@@ -557,6 +573,25 @@ class RuntimeStore:
                 return self.get_skill(name)
             revision = int(row["revision"] + 1) if row else 1
             created_at = row["created_at"] if row else now
+            skill_metadata = dict(metadata or {})
+            if row:
+                previous_metadata = _json(row["metadata_json"], {})
+                previous_policy = (
+                    previous_metadata.get("skill_policy")
+                    if isinstance(previous_metadata, dict)
+                    else {}
+                )
+                previous_policy = previous_policy if isinstance(previous_policy, dict) else {}
+                demotion_count = int(previous_policy.get("demotion_count") or 0)
+                archived = bool(previous_policy.get("archived"))
+                current_policy = skill_metadata.get("skill_policy")
+                current_policy = current_policy if isinstance(current_policy, dict) else {}
+                skill_metadata["skill_policy"] = {
+                    **current_policy,
+                    "demotion_count": demotion_count,
+                    "archived": archived,
+                    "status": "ARCHIVED" if archived else "EXPERIMENTAL",
+                }
             # A changed procedure is a new experiment. Never let a fresh revision
             # inherit the previous revision's success history.
             successes = 0
@@ -572,7 +607,7 @@ class RuntimeStore:
                   successes=excluded.successes, failures=excluded.failures, score=excluded.score,
                   metadata_json=excluded.metadata_json, updated_at=excluded.updated_at""",
                 (name, description, workflow_json, revision, successes, failures, score,
-                 source, _dump(metadata or {}), created_at, now),
+                 source, _dump(skill_metadata), created_at, now),
             )
             conn.execute(
                 "INSERT INTO runtime_skill_versions(name,revision,description,workflow_json,change_note,created_at) "
@@ -580,6 +615,132 @@ class RuntimeStore:
                 (name, revision, description, workflow_json, change_note, now),
             )
         return self.get_skill(name)
+
+    def evaluate_skill_policy(
+        self,
+        name: str,
+        *,
+        persist: bool = False,
+    ) -> dict[str, Any]:
+        with self._connect() as conn:
+            skill = conn.execute(
+                "SELECT revision,successes,failures,metadata_json FROM runtime_skills WHERE name=?",
+                (name,),
+            ).fetchone()
+            if not skill:
+                raise ValueError("unknown skill")
+            revision = int(skill["revision"])
+            outcomes = conn.execute(
+                "SELECT success,audited_valid,duration_ms FROM runtime_skill_outcomes "
+                "WHERE name=? AND revision=? ORDER BY id DESC LIMIT 20",
+                (name, revision),
+            ).fetchall()
+
+        metadata = _json(skill["metadata_json"], {})
+        metadata = metadata if isinstance(metadata, dict) else {}
+        policy_meta = metadata.get("skill_policy")
+        policy_meta = policy_meta if isinstance(policy_meta, dict) else {}
+        demotion_count = int(policy_meta.get("demotion_count") or 0)
+        archived = bool(policy_meta.get("archived"))
+
+        recent_count = len(outcomes)
+        recent_successes = sum(int(row["success"]) for row in outcomes)
+        recent_rate = (
+            recent_successes / recent_count if recent_count else None
+        )
+        last_ten = outcomes[:_SKILL_DEMOTE_WINDOW]
+        last_ten_rate = (
+            sum(int(row["success"]) for row in last_ten) / len(last_ten)
+            if len(last_ten) == _SKILL_DEMOTE_WINDOW
+            else None
+        )
+        audited_invalid = sum(
+            1 for row in outcomes if row["audited_valid"] is not None and not bool(row["audited_valid"])
+        )
+        latencies = sorted(
+            float(row["duration_ms"])
+            for row in outcomes
+            if row["duration_ms"] is not None
+        )
+        p95_ms = None
+        if latencies:
+            index = max(0, min(len(latencies) - 1, int((len(latencies) * 0.95) + 0.999999) - 1))
+            p95_ms = round(latencies[index], 3)
+
+        trusted = (
+            not archived
+            and int(skill["successes"]) >= _SKILL_TRUST_MIN_SUCCESSES
+            and recent_count >= _SKILL_TRUST_MIN_RECENT_RUNS
+            and recent_rate is not None
+            and recent_rate >= _SKILL_TRUST_SUCCESS_RATE
+            and audited_invalid == 0
+            and len(latencies) >= _SKILL_TRUST_MIN_RECENT_RUNS
+            and p95_ms is not None
+            and p95_ms <= _SKILL_PATHOLOGICAL_P95_MS
+        )
+        demoted = (
+            not archived
+            and last_ten_rate is not None
+            and last_ten_rate < _SKILL_DEMOTE_SUCCESS_RATE
+        )
+
+        status = (
+            "ARCHIVED"
+            if archived
+            else "DEMOTED"
+            if demoted
+            else "TRUSTED_PRODUCTION"
+            if trusted
+            else "EXPERIMENTAL"
+        )
+
+        if persist:
+            previous_status = str(policy_meta.get("status") or "EXPERIMENTAL")
+            if status == "DEMOTED" and previous_status != "DEMOTED":
+                demotion_count += 1
+            if demotion_count >= 2:
+                archived = True
+                status = "ARCHIVED"
+            metadata["skill_policy"] = {
+                "status": status,
+                "demotion_count": demotion_count,
+                "archived": archived,
+                "last_20_success_rate": (
+                    round(recent_rate, 6) if recent_rate is not None else None
+                ),
+                "last_10_success_rate": (
+                    round(last_ten_rate, 6) if last_ten_rate is not None else None
+                ),
+                "audited_invalid_outputs": audited_invalid,
+                "latency_samples": len(latencies),
+                "p95_duration_ms": p95_ms,
+                "evaluated_at": _now(),
+            }
+            with self._lock, self._connect() as conn:
+                conn.execute(
+                    "UPDATE runtime_skills SET metadata_json=? WHERE name=?",
+                    (_dump(metadata), name),
+                )
+
+        return {
+            "status": status,
+            "demotion_count": demotion_count,
+            "archived": archived,
+            "minimum_successes": _SKILL_TRUST_MIN_SUCCESSES,
+            "successes": int(skill["successes"]),
+            "failures": int(skill["failures"]),
+            "recent_runs": recent_count,
+            "last_20_success_rate": (
+                round(recent_rate, 6) if recent_rate is not None else None
+            ),
+            "last_10_success_rate": (
+                round(last_ten_rate, 6) if last_ten_rate is not None else None
+            ),
+            "audited_invalid_outputs": audited_invalid,
+            "latency_samples": len(latencies),
+            "p95_duration_ms": p95_ms,
+            "pathological_p95_threshold_ms": _SKILL_PATHOLOGICAL_P95_MS,
+        }
 
     def get_skill(self, name: str) -> dict[str, Any]:
         with self._connect() as conn:
@@ -591,18 +752,30 @@ class RuntimeStore:
         item["metadata"] = _json(item.pop("metadata_json"), {})
         with self._connect() as conn:
             outcomes = conn.execute(
-                "SELECT revision,success,occurred_at FROM runtime_skill_outcomes "
-                "WHERE name=? ORDER BY id DESC LIMIT 20",
-                (name,),
+                "SELECT revision,success,occurred_at,audited_valid,duration_ms "
+                "FROM runtime_skill_outcomes "
+                "WHERE name=? AND revision=? ORDER BY id DESC LIMIT 20",
+                (name, int(item["revision"])),
             ).fetchall()
         item["recent_outcomes"] = [
             {
                 "revision": int(row["revision"]),
                 "success": bool(row["success"]),
                 "occurred_at": row["occurred_at"],
+                "audited_valid": (
+                    bool(row["audited_valid"])
+                    if row["audited_valid"] is not None
+                    else None
+                ),
+                "duration_ms": (
+                    float(row["duration_ms"])
+                    if row["duration_ms"] is not None
+                    else None
+                ),
             }
             for row in outcomes
         ]
+        item["skill_policy"] = self.evaluate_skill_policy(name)
         return item
 
     def list_skills(self, limit: int = 50) -> list[dict[str, Any]]:
@@ -613,9 +786,20 @@ class RuntimeStore:
                 "FROM runtime_skills ORDER BY score DESC, updated_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
-        return [dict(row) for row in rows]
+        items = [dict(row) for row in rows]
+        for item in items:
+            policy = self.evaluate_skill_policy(str(item["name"]))
+            item["skill_policy"] = policy
+        return items
 
-    def record_skill_outcome(self, name: str, success: bool) -> dict[str, Any]:
+    def record_skill_outcome(
+        self,
+        name: str,
+        success: bool,
+        *,
+        audited_valid: bool | None = None,
+        duration_ms: float | None = None,
+    ) -> dict[str, Any]:
         with self._lock, self._connect() as conn:
             row = conn.execute(
                 "SELECT revision,successes,failures FROM runtime_skills WHERE name=?", (name,)
@@ -631,10 +815,19 @@ class RuntimeStore:
                 (successes, failures, score, occurred_at, name),
             )
             conn.execute(
-                "INSERT INTO runtime_skill_outcomes(name,revision,success,occurred_at) "
-                "VALUES (?,?,?,?)",
-                (name, int(row["revision"]), 1 if success else 0, occurred_at),
+                "INSERT INTO runtime_skill_outcomes("
+                "name,revision,success,occurred_at,audited_valid,duration_ms"
+                ") VALUES (?,?,?,?,?,?)",
+                (
+                    name,
+                    int(row["revision"]),
+                    1 if success else 0,
+                    occurred_at,
+                    None if audited_valid is None else (1 if audited_valid else 0),
+                    None if duration_ms is None else max(0.0, float(duration_ms)),
+                ),
             )
+        self.evaluate_skill_policy(name, persist=True)
         return self.get_skill(name)
 
     def maybe_auto_rollback_skill(
