@@ -391,7 +391,7 @@ def handle_runtime_tool(
             fail_fast=bool(arguments.get("fail_fast", True)),
         )
         success = result["status"] == "ok"
-        stats = store.record_skill_outcome(skill_name, success)
+        store.record_skill_outcome(skill_name, success)
         recovery = None
         if not success:
             recovery = store.maybe_auto_rollback_skill(skill_name)

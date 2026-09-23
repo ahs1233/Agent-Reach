@@ -571,6 +571,7 @@ class RuntimeStore:
                 ON CONFLICT(name) DO UPDATE SET
                   description=excluded.description, workflow_json=excluded.workflow_json,
                   revision=excluded.revision, source=excluded.source,
+                  successes=excluded.successes, failures=excluded.failures, score=excluded.score,
                   metadata_json=excluded.metadata_json, updated_at=excluded.updated_at""",
                 (name, description, workflow_json, revision, successes, failures, score,
                  source, _dump(metadata or {}), created_at, now),

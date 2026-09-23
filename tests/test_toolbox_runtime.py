@@ -256,3 +256,23 @@ def test_skill_revision_resets_score_and_can_roll_back(tmp_path):
     assert len(rolled["workflow"]) == 1
     assert rolled["successes"] == 0
     assert rolled["score"] == 0.5
+
+
+def test_skill_revision_resets_failures_but_identical_save_preserves_history(tmp_path):
+    store = RuntimeStore(str(tmp_path / "runtime.db"))
+    workflow = [{"id": "doctor", "tool_name": "reach_doctor"}]
+    store.save_skill("revision-stats", "v1", workflow)
+    store.record_skill_outcome("revision-stats", False)
+    before = store.record_skill_outcome("revision-stats", False)
+
+    unchanged = store.save_skill("revision-stats", "v1", workflow)
+    assert unchanged["revision"] == 1
+    assert unchanged["failures"] == 2
+    assert unchanged["score"] == before["score"]
+
+    revised = store.save_skill("revision-stats", "v2", workflow)
+    assert revised["revision"] == 2
+    assert revised["successes"] == revised["failures"] == 0
+    assert revised["score"] == 0.5
+    assert len(revised["recent_outcomes"]) == 2
+    assert all(item["revision"] == 1 for item in revised["recent_outcomes"])
