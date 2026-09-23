@@ -27,7 +27,7 @@ from agent_reach import AgentReach
 from agent_reach.channels.web import WebChannel
 
 from .browser_use import inspect_youtube_page, probe_browser_use
-from .orchestration import OrchestrationStore
+from .orchestration import OrchestrationStore, classify_tool_effect
 from .orchestration_mcp import handle_orchestration_tool, orchestration_tool_specs
 from .research import ResearchStore
 from .research_mcp import handle_research_tool, research_tool_specs
@@ -558,7 +558,78 @@ class AhmedToolboxGateway:
                 return self._text_result(
                     json.dumps(orchestration_result, ensure_ascii=False, default=str)
                 )
+
+        if self.runtime_enabled and self.runtime_store is not None:
+            try:
+                runtime_result = handle_runtime_tool(
+                    self.runtime_store,
+                    name,
+                    arguments,
+                    execute_step=self._runtime_execute_step,
+                    orchestration_store=self.orchestration_store,
+                )
+            except (TypeError, ValueError) as exc:
+                return self._text_result(f"Runtime error: {exc}", is_error=True)
+            if runtime_result is not None:
+                return self._text_result(
+                    json.dumps(runtime_result, ensure_ascii=False, default=str)
+                )
         return self._call_tool_unorchestrated(name, arguments)
+
+    def resolve_tool_effect(self, name: str) -> str | None:
+        """Return the effect class used by orchestration/runtime trust gates."""
+        return classify_tool_effect(name)
+
+    def _runtime_execute_step(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        role: str,
+        orchestration_id: str | None,
+    ) -> dict[str, Any]:
+        if tool_name.startswith("runtime_") or tool_name.startswith("orchestration_"):
+            return self._text_result(
+                f"runtime recursion denied: {tool_name}", is_error=True
+            )
+        if orchestration_id:
+            if not self.orchestration_enabled or self.orchestration_store is None:
+                return self._text_result(
+                    "orchestration_id supplied but orchestration is disabled",
+                    is_error=True,
+                )
+            try:
+                executed = handle_orchestration_tool(
+                    self.orchestration_store,
+                    "orchestration_execute",
+                    {
+                        "orchestration_id": orchestration_id,
+                        "role": role,
+                        "tool_name": tool_name,
+                        "arguments": arguments,
+                    },
+                    research_store=self.research_store,
+                    execute_tool=self._call_tool_unorchestrated,
+                    resolve_effect=self.resolve_tool_effect,
+                )
+            except (TypeError, ValueError) as exc:
+                return self._text_result(
+                    f"orchestrated runtime step failed: {exc}", is_error=True
+                )
+            if not executed or not executed.get("executed"):
+                return self._text_result(
+                    json.dumps(executed or {"executed": False}, ensure_ascii=False, default=str),
+                    is_error=True,
+                )
+            return executed["result"]
+
+        effect = self.resolve_tool_effect(tool_name)
+        if effect != "SE0":
+            return self._text_result(
+                f"runtime step {tool_name!r} requires orchestration_id "
+                f"(effect={effect or 'unknown'})",
+                is_error=True,
+            )
+        return self._call_tool_unorchestrated(tool_name, arguments)
 
     def _call_tool_unorchestrated(
         self, name: str, arguments: dict[str, Any] | None = None
