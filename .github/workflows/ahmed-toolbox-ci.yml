@@ -6,22 +6,14 @@ on:
       - feat/ahmed-toolbox-mcp
   pull_request:
     paths:
-      - "agent_reach/toolbox/**"
+      - "agent_reach/**"
       - "integrations/panwatch/**"
-      - "tests/test_toolbox_gateway.py"
-      - "tests/test_toolbox_server.py"
-      - "tests/test_mcp_http_discovery.py"
-      - "scripts/probe_mcp_discovery.py"
-      - "tests/test_toolbox_orchestration.py"
-      - "tests/test_toolbox_runtime.py"
-      - "tests/test_toolbox_subagent.py"
-      - "tests/test_runtime_trust_gate.py"
-      - "tests/test_toolbox_browser_use.py"
-      - "tests/test_xau_intraday_integration.py"
-      - "tests/test_toolbox_ace.py"
+      - "tests/**"
+      - "scripts/**"
       - "Dockerfile"
-      - "scripts/start-ahmed-toolbox.sh"
       - "pyproject.toml"
+      - "docs/AHMED_TOOLBOX_STABILITY_GATE_2026-09-23.md"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
       - ".github/workflows/ahmed-toolbox-ci.yml"
 
 jobs:
@@ -33,6 +25,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -57,3 +50,24 @@ jobs:
         run: |
           pytest -q tests/test_toolbox_server.py tests/test_mcp_http_discovery.py
           pytest -q tests/test_toolbox_gateway.py tests/test_toolbox_orchestration.py tests/test_toolbox_runtime.py tests/test_toolbox_subagent.py tests/test_runtime_trust_gate.py tests/test_toolbox_browser_use.py tests/test_xau_intraday_integration.py tests/test_toolbox_ace.py
+
+  full-regression:
+    name: Full regression suite
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Full pytest regression
+        run: pytest -q tests
