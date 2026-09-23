@@ -70,6 +70,7 @@ required = {
     "runtime_skill_save",
     "runtime_skill_list",
     "runtime_skill_get",
+    "runtime_skill_rollback",
     "runtime_skill_execute",
 }
 missing = sorted(required - names)
@@ -150,6 +151,67 @@ if "orchestration_start" in names:
     completed = payload("orchestration_complete", {"orchestration_id": oid})
     if not completed.get("completed"):
         raise SystemExit(f"orchestration completion failed: {completed}")
+
+provider_keys = (
+    "AHMED_SUBAGENT_BASE_URL",
+    "AHMED_SUBAGENT_API_KEY",
+    "AHMED_SUBAGENT_MODEL",
+)
+provider_values = [bool(os.environ.get(key, "").strip()) for key in provider_keys]
+if any(provider_values) and not all(provider_values):
+    raise SystemExit("Ahmed model-subagent provider configuration is incomplete")
+if all(provider_values):
+    if not status.get("features", {}).get("model_subagents"):
+        raise SystemExit("runtime_status did not enable model_subagents")
+    parent = payload(
+        "orchestration_start",
+        {
+            "objective": "Railway live model-subagent acceptance",
+            "mode": "general",
+            "budget": {"tool_calls": 1, "network_calls": 0},
+        },
+    )
+    delegated = payload(
+        "runtime_delegate",
+        {
+            "orchestration_id": parent["orchestration_id"],
+            "max_parallel": 1,
+            "timeout_seconds": 120,
+            "tasks": [
+                {
+                    "id": "live-model-child",
+                    "objective": "Verify model-backed child tool calling.",
+                    "goal": (
+                        "You MUST call reach_doctor exactly once using the provided tool. "
+                        "After the tool returns, reply with one short sentence confirming the check."
+                    ),
+                    "role": "orchestrator",
+                    "tool_allowlist": ["reach_doctor"],
+                    "max_turns": 4,
+                    "budget": {"tool_calls": 1, "network_calls": 0},
+                }
+            ],
+        },
+    )
+    if delegated.get("status") != "ok":
+        raise SystemExit(f"model-subagent delegation failed: {delegated}")
+    tasks = delegated.get("tasks") or []
+    if not tasks or tasks[0].get("status") != "ok":
+        raise SystemExit(f"model-subagent task failed: {delegated}")
+    child_result = tasks[0].get("result") or {}
+    if int(child_result.get("tool_call_count") or 0) < 1:
+        raise SystemExit(
+            "model-subagent provider responded without a verified tool call"
+        )
+    child_id = child_result.get("child_orchestration_id")
+    child_status = payload(
+        "orchestration_status", {"orchestration_id": child_id}
+    )
+    if child_status.get("usage", {}).get("tool_calls") != 1:
+        raise SystemExit(
+            f"model-subagent tool budget/journal mismatch: {child_status}"
+        )
+    print("__AHMED_MODEL_SUBAGENT_STARTUP_ACCEPTANCE__ok")
 
 print("__AHMED_RUNTIME_STARTUP_ACCEPTANCE__ok")
 PY
