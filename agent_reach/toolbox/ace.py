@@ -99,6 +99,7 @@ class ProviderSpec:
     quality: float
     latency_seconds: float
     quota: str = "local"
+    tier: str = "LOCAL"
     paid: bool = False
     available: bool = True
 
@@ -114,6 +115,33 @@ class CreativeProvider(Protocol):
         kind: str,
         prompt: str,
         context: dict[str, Any],
+    ) -> dict[str, Any]:
+        ...
+
+
+class PublishingProvider(Protocol):
+    """Official publisher adapters may implement this contract."""
+
+    name: str
+    official_api: bool
+    platforms: tuple[str, ...]
+
+    def publish(
+        self,
+        package: dict[str, Any],
+    ) -> dict[str, Any]:
+        ...
+
+
+class AnalyticsProvider(Protocol):
+    """Platform analytics adapters return real snapshots or explicit errors."""
+
+    name: str
+    platforms: tuple[str, ...]
+
+    def collect(
+        self,
+        publication_ref: str,
     ) -> dict[str, Any]:
         ...
 
@@ -134,6 +162,7 @@ class LocalManifestProvider:
         quality=0.55,
         latency_seconds=0.01,
         quota="local",
+        tier="LOCAL",
         paid=False,
         available=True,
     )
@@ -174,9 +203,20 @@ class CostAwareRouter:
         if not candidates:
             mode = "FREE_ONLY" if free_only else "configured"
             raise ValueError(f"no {mode} creative provider available for {kind}")
+        tier_priority = {
+            "LOCAL": 0,
+            "OPEN_SOURCE": 1,
+            "FREE_API": 2,
+            "FREE_TIER": 3,
+            "PAID_API": 4,
+        }
         candidates.sort(
             key=lambda provider: (
                 provider.spec.paid,
+                tier_priority.get(
+                    provider.spec.tier.upper(),
+                    99,
+                ),
                 provider.spec.estimated_cost,
                 -provider.spec.quality,
                 provider.spec.latency_seconds,
@@ -298,6 +338,123 @@ def infer_content_signals(text: str) -> list[str]:
         if any(needle in lowered for needle in needles):
             signals.append(label)
     return signals
+
+
+def analyze_content_features(
+    text: str,
+) -> dict[str, Any]:
+    """Extract auditable content dimensions without pretending to see hidden data."""
+
+    raw = text or ""
+    compact = re.sub(r"\s+", " ", raw).strip()
+    lowered = compact.lower()
+    signals = infer_content_signals(compact)
+    words = re.findall(
+        r"[A-Za-z0-9\u0600-\u06ff]+",
+        compact,
+    )
+    first_sentence = re.split(
+        r"[.!?؟]\s*",
+        compact,
+        maxsplit=1,
+    )[0][:180]
+    topic_terms = _slug_words(compact, 8)
+
+    if "demonstration" in signals:
+        format_hint = "demonstration"
+    elif "price_comparison" in signals:
+        format_hint = "comparison"
+    elif "question_hook" in signals:
+        format_hint = "question-led"
+    else:
+        format_hint = "explanation_or_unknown"
+
+    if (
+        "problem_solution" in signals
+        and "demonstration" in signals
+    ):
+        narrative = "problem_solution_demo"
+    elif "problem_solution" in signals:
+        narrative = "problem_solution"
+    elif "question_hook" in signals:
+        narrative = "question_answer"
+    else:
+        narrative = "unknown"
+
+    cta_terms = [
+        term
+        for term in (
+            "download",
+            "try",
+            "order",
+            "shop",
+            "جرّب",
+            "حمّل",
+            "اطلب",
+        )
+        if term in lowered
+    ]
+    credibility = [
+        term
+        for term in (
+            "review",
+            "rating",
+            "source",
+            "data",
+            "proof",
+            "تقييم",
+            "مصدر",
+            "دليل",
+        )
+        if term in lowered
+    ]
+    emotional = []
+    for label, terms in {
+        "curiosity": ("why", "how", "?", "ليش", "كيف"),
+        "urgency": ("now", "today", "اليوم", "الآن"),
+        "savings": ("save", "cheaper", "سعر", "أرخص"),
+        "humor": ("funny", "joke", "ضحك", "نكت"),
+    }.items():
+        if any(term in lowered for term in terms):
+            emotional.append(label)
+
+    return {
+        "hook": (
+            first_sentence
+            if first_sentence
+            else "unknown"
+        ),
+        "topic_terms": topic_terms,
+        "format": format_hint,
+        "length": {
+            "characters": len(compact),
+            "words": len(words),
+            "seconds": None,
+            "note": (
+                "video duration unavailable unless "
+                "the retrieved source exposes it"
+            ),
+        },
+        "narrative_structure": narrative,
+        "visual_style": (
+            "demonstration_or_screen_visual"
+            if "demonstration" in signals
+            else "unknown_from_text_only"
+        ),
+        "cta": cta_terms,
+        "emotional_angle": emotional or ["unknown"],
+        "target_audience": (
+            "not_inferred_as_fact_without_explicit_source_context"
+        ),
+        "novelty": (
+            "requires corpus comparison; not asserted per single source"
+        ),
+        "credibility_signals": credibility,
+        "engagement_signals": (
+            "not_available_without_source_metrics"
+        ),
+        "signals": signals,
+    }
 
 
 class ACEStore:
@@ -1253,10 +1410,35 @@ class ACEStore:
                 1.0,
                 math.log10(max(int(account_size or 1), 10)),
             )
+            platform = str(
+                snapshots[variant_id].get("platform")
+                or ""
+            ).lower()
+            maturity_horizon = {
+                "tiktok": 24.0,
+                "instagram": 36.0,
+                "youtube_shorts": 48.0,
+            }.get(platform, 36.0)
+            age_hours = max(
+                0.0,
+                float(
+                    snapshots[variant_id].get(
+                        "age_hours"
+                    )
+                    or 0
+                ),
+            )
+            maturity_factor = min(
+                1.0,
+                age_hours / maturity_horizon,
+            )
             uncertainty = min(
                 0.5,
                 (0.5 / math.sqrt(max(exposure, 1) / 100.0))
-                * min(1.25, account_scale / 2),
+                * min(1.25, account_scale / 2)
+                / math.sqrt(
+                    max(maturity_factor, 0.25)
+                ),
             )
             scores[variant_id] = {
                 "label": variant["label"],
@@ -1266,7 +1448,12 @@ class ACEStore:
                     for key, value in components.items()
                 },
                 "sample_size": exposure,
-                "age_hours": snapshots[variant_id]["age_hours"],
+                "platform": platform,
+                "age_hours": age_hours,
+                "maturity_factor": round(
+                    maturity_factor,
+                    6,
+                ),
                 "account_size": account_size,
                 "variant_state": "INCONCLUSIVE",
             }
@@ -1286,6 +1473,10 @@ class ACEStore:
                 for value in item["components"].values()
             )
         ) / len(scores)
+        maturity_floor = min(
+            item["maturity_factor"]
+            for item in scores.values()
+        )
         confidence = min(
             0.99,
             (
@@ -1295,7 +1486,8 @@ class ACEStore:
                     / max(minimum_sample, 200)
                 )
             )
-            * completeness,
+            * completeness
+            * maturity_floor,
         )
         ordered = sorted(
             scores,
