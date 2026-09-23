@@ -37,6 +37,8 @@ def test_inspection_parses_structured_output(monkeypatch):
         assert command == ["/usr/bin/browser-use"]
         assert "new_tab" in kwargs["input"]
         assert "ytd-comment-thread-renderer" in kwargs["input"]
+        assert "window.scrollTo" in kwargs["input"]
+        assert "\nscroll(" not in kwargs["input"]
         return subprocess.CompletedProcess(
             command,
             0,
@@ -74,3 +76,47 @@ def test_missing_structured_output_is_error(monkeypatch):
     )
     with pytest.raises(browser_use.BrowserUseError):
         browser_use.inspect_youtube_page("https://youtu.be/abc")
+
+
+def test_google_unusual_traffic_redirect_is_error(monkeypatch):
+    monkeypatch.setattr(browser_use.shutil, "which", lambda _name: "/usr/bin/browser-use")
+    payload = {
+        "resolved_url": "https://www.google.com/sorry/index?continue=https://www.youtube.com/",
+        "title": "YouTube",
+        "description": "",
+        "visible_text": "Our systems have detected unusual traffic from your computer network.",
+        "comments": [],
+    }
+    monkeypatch.setattr(
+        browser_use.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0,
+            stdout=browser_use._RESULT_MARKER + json.dumps(payload) + "\n",
+            stderr="",
+        ),
+    )
+    with pytest.raises(browser_use.BrowserUseError, match="unusual-traffic"):
+        browser_use.inspect_youtube_page("https://www.youtube.com/watch?v=abc")
+
+
+def test_unexpected_rendered_host_is_error(monkeypatch):
+    monkeypatch.setattr(browser_use.shutil, "which", lambda _name: "/usr/bin/browser-use")
+    payload = {
+        "resolved_url": "https://example.org/",
+        "title": "Unexpected",
+        "description": "",
+        "visible_text": "unexpected",
+        "comments": [],
+    }
+    monkeypatch.setattr(
+        browser_use.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0,
+            stdout=browser_use._RESULT_MARKER + json.dumps(payload) + "\n",
+            stderr="",
+        ),
+    )
+    with pytest.raises(browser_use.BrowserUseError, match="allowed YouTube origin"):
+        browser_use.inspect_youtube_page("https://www.youtube.com/watch?v=abc")

@@ -101,11 +101,17 @@ def _build_script(url: str, *, include_comments: bool, max_comments: int) -> str
     safe_url = json.dumps(url, ensure_ascii=False)
     comment_block = "comments = []"
     if include_comments:
+        allowed_hosts = json.dumps(sorted(_ALLOWED_YOUTUBE_HOSTS))
         comment_block = f"""
-scroll(0, 7000)
 import time
-time.sleep(2)
-comments = js("Array.from(document.querySelectorAll('ytd-comment-thread-renderer #content-text')).slice(0, {max_comments}).map(e => e.innerText || '')") or []
+comments = []
+host = (js("location.hostname || ''") or '').lower()
+if host in {allowed_hosts}:
+    js("window.scrollTo(0, Math.max(document.body.scrollHeight, 7000)); true")
+    time.sleep(2)
+    js("document.querySelector('ytd-comments#comments, #comments')?.scrollIntoView({{block: 'start'}}); true")
+    time.sleep(2)
+    comments = js("Array.from(document.querySelectorAll('ytd-comment-thread-renderer #content-text')).slice(0, {max_comments}).map(e => e.innerText || '')") or []
 """.strip()
 
     return f"""
@@ -126,6 +132,31 @@ payload = {{
 }}
 print({_RESULT_MARKER!r} + json.dumps(payload, ensure_ascii=False))
 """.strip() + "\n"
+
+
+def _validate_rendered_youtube_page(payload: dict[str, Any], source_url: str) -> str:
+    """Reject redirects/interstitials so blocked pages cannot masquerade as evidence."""
+    resolved_url = str(payload.get("resolved_url") or source_url).strip()
+    parsed = urlsplit(resolved_url)
+    host = (parsed.hostname or "").lower()
+    if host in _ALLOWED_YOUTUBE_HOSTS:
+        return resolved_url
+
+    visible_text = str(payload.get("visible_text") or "")
+    lowered = visible_text.lower()
+    google_block = (
+        host.endswith("google.com")
+        and ("/sorry/" in parsed.path or "unusual traffic" in lowered)
+    )
+    if google_block:
+        raise BrowserUseError(
+            "YouTube browser session was blocked by Google's unusual-traffic "
+            "interstitial; the current browser egress is not accepted by YouTube"
+        )
+    raise BrowserUseError(
+        "YouTube browser inspection left the allowed YouTube origin "
+        f"(resolved host: {host or '<empty>'})"
+    )
 
 
 def inspect_youtube_page(
@@ -197,13 +228,15 @@ def inspect_youtube_page(
     if not isinstance(payload, dict):
         raise BrowserUseError("browser-use structured output must be an object")
 
+    resolved_url = _validate_rendered_youtube_page(payload, source_url)
+
     raw_comments = payload.get("comments") or []
     comments = tuple(
         str(item).strip() for item in raw_comments if str(item).strip()
     )[:max_comments]
     evidence = YouTubeBrowserEvidence(
         source_url=source_url,
-        resolved_url=str(payload.get("resolved_url") or source_url).strip(),
+        resolved_url=resolved_url,
         title=str(payload.get("title") or "").strip(),
         description=str(payload.get("description") or "").strip(),
         visible_text=str(payload.get("visible_text") or "")[:30000],
