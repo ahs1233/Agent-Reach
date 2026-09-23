@@ -9,6 +9,7 @@ from typing import Any, Callable
 from .ace import (
     ACEStore,
     CostAwareRouter,
+    analyze_content_features,
     hashtag_terms,
     infer_content_signals,
     structured_script,
@@ -333,6 +334,14 @@ def _default_queries(goal: str) -> list[str]:
             f"{goal} short form video price comparison "
             "product demo founder content"
         ),
+        (
+            f"{goal} influential creators accounts "
+            "Instagram TikTok YouTube audience"
+        ),
+        (
+            f"{goal} business model monetization methods "
+            "subscriptions commissions advertising"
+        ),
     ]
 
 
@@ -439,6 +448,11 @@ def _research(
                     "content_signals": infer_content_signals(
                         body
                     ),
+                    "content_intelligence": (
+                        analyze_content_features(
+                            body
+                        )
+                    ),
                     "source_url": url,
                     "source_scope": (
                         "retrieved public content"
@@ -468,6 +482,11 @@ def _research(
             metadata={
                 "signals": infer_content_signals(
                     body
+                ),
+                "content_intelligence": (
+                    analyze_content_features(
+                        body
+                    )
                 ),
                 "sample_scope": (
                     "retrieved public source"
@@ -1213,6 +1232,13 @@ def handle_ace_tool(
             "status": "ok",
             "free_only_supported": True,
             "provider": provider.spec.to_dict(),
+            "routing_order": [
+                "LOCAL",
+                "OPEN_SOURCE",
+                "FREE_API",
+                "FREE_TIER",
+                "PAID_API",
+            ],
             "creative_capabilities": {
                 "built_in_free": [
                     "script",
