@@ -16,8 +16,8 @@ from agent_reach.toolbox.gateway import AhmedToolboxGateway, RemoteMCPError
 from agent_reach.toolbox.orchestration import OrchestrationStore
 from agent_reach.toolbox.research import ResearchStore
 from agent_reach.toolbox.retrieval import retrieve_with_fallback
-from agent_reach.toolbox.runtime import RuntimeStore
 from agent_reach.toolbox.server import ToolboxRequestHandler
+from agent_reach.toolbox.runtime import RuntimeStore
 
 from .framework import load_cases, run_case
 
@@ -214,7 +214,8 @@ def _research_case(number):
                 run["run_id"], source_id=source["source_id"],
                 supporting_passage=f"support {idx}", observation_type="ACTUAL",
             )
-            sources.append(source); evidence_ids.append(ev["evidence_id"])
+            sources.append(source)
+            evidence_ids.append(ev["evidence_id"])
         if number in {29, 35}:
             rel = store.record_source_relationship(
                 run["run_id"], source_id=sources[0]["source_id"],
@@ -409,9 +410,12 @@ def _retrieval_case(number):
         browser_tool=("golden_browser" if number == 6 else None),
         min_chars=100,
     )
-    if number in {4,66}: assert result["final_tool"] == "scrapling__fetch"
-    if number == 5: assert result["final_tool"] == "scrapling__stealthy_fetch"
-    if number == 6: assert result["final_tool"] == "golden_browser"
+    if number in {4, 66}:
+        assert result["final_tool"] == "scrapling__fetch"
+    if number == 5:
+        assert result["final_tool"] == "scrapling__stealthy_fetch"
+    if number == 6:
+        assert result["final_tool"] == "golden_browser"
     if number == 7:
         assert result["status"] in {"UNAVAILABLE", "SOURCE_UNAVAILABLE"}
         assert not result.get("content")
@@ -429,7 +433,8 @@ def _http_server(gateway, token=""):
 def _post(port, body, headers=None):
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     base = {"Content-Type": "application/json"}
-    if headers: base.update(headers)
+    if headers:
+        base.update(headers)
     connection.request("POST", "/mcp", body=body, headers=base)
     response = connection.getresponse()
     data = response.read()
@@ -503,7 +508,9 @@ def _failure_case(number, tmp_path):
                 status = status2
             return "MCP boundary rejected invalid request safely", {"http_status": status}
         finally:
-            server.shutdown(); server.server_close(); thread.join(timeout=2)
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
     if number == 74:
         gateway = AhmedToolboxGateway(
             agent_reach=FakeReach(),
@@ -553,7 +560,9 @@ def _integration_case(number, tmp_path):
             assert results == [200, 200]
             return "Two independent MCP clients served concurrently", {"statuses": results}
         finally:
-            server.shutdown(); server.server_close(); thread.join(timeout=2)
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
     if number == 80:
         store = ResearchStore(str(tmp_path / "full-flow.db"))
         run = store.create_run("golden full pipeline")
@@ -589,15 +598,20 @@ def _integration_case(number, tmp_path):
 
 def _execute(case, tmp_path):
     n = int(case["number"])
-    if n in {4,5,6,7,66}: return _retrieval_case(n)
+    if n in {4, 5, 6, 7, 66}:
+        return _retrieval_case(n)
     if n == 14:
         parsed = feedparser.parse(b"""<?xml version="1.0"?><rss version="2.0"><channel><title>Golden</title><item><title>One</title><link>https://example.com/1</link></item></channel></rss>""")
         assert parsed.feed.title == "Golden" and parsed.entries[0].title == "One"
         return "RSS parsed", {"entries": len(parsed.entries)}
-    if 16 <= n <= 35: return _research_case(n)
-    if n in {51,52,53,56,57,58,59,60,61,62,64,65}: return _runtime_case(n, tmp_path)
-    if n in {67,68,70,71,72,73,74,75}: return _failure_case(n, tmp_path)
-    if n in {78,79,80}: return _integration_case(n, tmp_path)
+    if 16 <= n <= 35:
+        return _research_case(n)
+    if n in {51, 52, 53, 56, 57, 58, 59, 60, 61, 62, 64, 65}:
+        return _runtime_case(n, tmp_path)
+    if n in {67, 68, 70, 71, 72, 73, 74, 75}:
+        return _failure_case(n, tmp_path)
+    if n in {78, 79, 80}:
+        return _integration_case(n, tmp_path)
     raise AssertionError(f"deterministic case has no executor: {n}")
 
 
