@@ -232,6 +232,302 @@ PY
     ;;
 esac
 
+case "${AHMED_RESEARCH_ENABLED:-0}:${AHMED_ORCHESTRATION_ENABLED:-0}" in
+  1:*|true:*|yes:*|on:*|*:1|*:true|*:yes|*:on)
+    echo "Running Ahmed Dual-Temporal startup acceptance"
+    python - <<'PY'
+import json
+
+from agent_reach.toolbox.gateway import AhmedToolboxGateway
+from agent_reach.toolbox.research import ResearchStore
+
+store = ResearchStore(":memory:")
+gateway = AhmedToolboxGateway(
+    research_store=store,
+    research_enabled=True,
+    orchestration_enabled=False,
+    runtime_enabled=False,
+    ace_enabled=False,
+)
+names = {tool["name"] for tool in gateway.list_tools()}
+required = {
+    "research_evaluate_temporal_validity",
+    "research_resolve_temporal_contradiction",
+    "research_temporal_fusion",
+    "research_final_live_refresh_gate",
+    "research_temporal_budget",
+}
+missing = sorted(required - names)
+if missing:
+    raise SystemExit(f"Dual-Temporal tools missing: {missing}")
+
+def payload(name, arguments):
+    result = gateway.call_tool(name, arguments)
+    if result.get("isError"):
+        raise SystemExit(f"{name} failed: {result}")
+    content = result.get("content") or []
+    if not content:
+        raise SystemExit(f"{name} returned no content")
+    return json.loads(content[0]["text"])
+
+budget = payload("research_temporal_budget", {})
+expected_budget = {
+    "max_total_retrieval_calls": 12,
+    "max_calls_per_lane": 3,
+    "max_fallback_attempts_per_source": 5,
+}
+if budget != expected_budget:
+    raise SystemExit(f"unexpected temporal budget: {budget}")
+
+run = payload(
+    "research_start_run",
+    {
+        "question": "Railway Dual-Temporal production startup acceptance",
+        "cutoff": "2026-09-23T16:00:00Z",
+        "metadata": {"acceptance": "startup", "domain": "generic"},
+    },
+)
+
+def add_source(slug, bucket, cutoff, authority, passage, *, primary=False, final_refresh=False):
+    history = [
+        {
+            "stage": "RETRIEVAL",
+            "tool": "startup_fixture",
+            "method": "deterministic",
+            "status": "SUCCESS",
+            "occurred_at": "2026-09-23T15:59:00Z",
+        }
+    ]
+    if final_refresh:
+        history.append(
+            {
+                "stage": "FINAL_LIVE_REFRESH",
+                "tool": "startup_fixture",
+                "method": "deterministic",
+                "status": "SUCCESS",
+                "occurred_at": "2026-09-23T15:59:30Z",
+            }
+        )
+    source = payload(
+        "research_record_source",
+        {
+            "run_id": run["run_id"],
+            "url": f"https://example.com/{slug}",
+            "content": f"{slug}:{passage}:{cutoff}",
+            "retrieval_tool": "startup_fixture",
+            "retrieval_method": "deterministic",
+            "retrieval_status": "SUCCESS",
+            "publisher": f"Publisher {slug}",
+            "source_type": "startup_fixture",
+            "primary_source": primary,
+            "publication_date": cutoff[:10],
+            "data_cutoff": cutoff,
+            "observation_time": cutoff,
+            "temporal_bucket": bucket,
+            "metadata": {"source_authority": authority},
+            "retrieval_history": history,
+        },
+    )
+    evidence = payload(
+        "research_add_evidence",
+        {
+            "run_id": run["run_id"],
+            "source_id": source["source_id"],
+            "supporting_passage": passage,
+            "structured_fact": {"fixture": slug},
+            "observation_type": "ACTUAL",
+            "temporal_bucket": bucket,
+        },
+    )
+    return source, evidence
+
+_, live = add_source(
+    "live",
+    "LIVE",
+    "2026-09-23T15:58:00Z",
+    "OFFICIAL_LIVE",
+    "Current official live state.",
+    primary=True,
+    final_refresh=True,
+)
+_, recent = add_source(
+    "recent",
+    "RECENT",
+    "2026-09-20",
+    "CREDIBLE_SECONDARY",
+    "Recent phase context.",
+)
+_, historical = add_source(
+    "historical",
+    "HISTORICAL",
+    "1979",
+    "OFFICIAL",
+    "Period-appropriate historical record.",
+    primary=True,
+)
+_, structural = add_source(
+    "structural",
+    "STRUCTURAL",
+    "1945",
+    "OFFICIAL",
+    "Long-lived structural rule remains in force.",
+    primary=True,
+)
+
+live_eval = payload(
+    "research_evaluate_temporal_validity",
+    {
+        "evidence_id": live["evidence_id"],
+        "as_of": "2026-09-23T16:00:00Z",
+        "freshness_policy": "breaking_news",
+    },
+)
+recent_eval = payload(
+    "research_evaluate_temporal_validity",
+    {
+        "evidence_id": recent["evidence_id"],
+        "as_of": "2026-09-23T16:00:00Z",
+        "freshness_policy": "custom_max_age",
+        "max_age_seconds": 1209600,
+    },
+)
+historical_eval = payload(
+    "research_evaluate_temporal_validity",
+    {
+        "evidence_id": historical["evidence_id"],
+        "as_of": "2026-09-23T16:00:00Z",
+        "authority_status": "OFFICIAL",
+        "provenance_complete": True,
+    },
+)
+structural_eval = payload(
+    "research_evaluate_temporal_validity",
+    {
+        "evidence_id": structural["evidence_id"],
+        "as_of": "2026-09-23T16:00:00Z",
+        "authority_status": "OFFICIAL",
+        "still_in_force": True,
+    },
+)
+if live_eval.get("validity_status") != "FRESH":
+    raise SystemExit(f"LIVE temporal validity failed: {live_eval}")
+if recent_eval.get("validity_status") not in {"FRESH", "UNCERTAIN"}:
+    raise SystemExit(f"RECENT temporal validity failed: {recent_eval}")
+if historical_eval.get("validity_status") != "HISTORICALLY_VALID":
+    raise SystemExit(f"HISTORICAL temporal validity failed: {historical_eval}")
+if structural_eval.get("validity_status") != "STRUCTURALLY_VALID":
+    raise SystemExit(f"STRUCTURAL temporal validity failed: {structural_eval}")
+
+live_gate = payload(
+    "research_final_live_refresh_gate",
+    {
+        "evidence_id": live["evidence_id"],
+        "as_of": "2026-09-23T16:00:00Z",
+    },
+)
+if not live_gate.get("passed"):
+    raise SystemExit(f"Final Live Refresh Gate failed: {live_gate}")
+
+fusion = payload(
+    "research_temporal_fusion",
+    {
+        "run_id": run["run_id"],
+        "evidence_ids": [
+            live["evidence_id"],
+            recent["evidence_id"],
+            historical["evidence_id"],
+            structural["evidence_id"],
+        ],
+        "historical_alignment": "CONSISTENT",
+        "structural_change": "NONE",
+        "persistence": "UNKNOWN",
+        "changed_now": "A current event occurred.",
+        "unchanged": "Historical and structural constraints remain.",
+        "structural_constraints": ["startup acceptance constraint"],
+        "falsifiers": ["durable structural change"],
+    },
+)
+if fusion.get("classification") != "PATTERN_CONTINUATION":
+    raise SystemExit(f"Temporal Fusion classification failed: {fusion}")
+if not all((fusion.get("coverage") or {}).values()):
+    raise SystemExit(f"Temporal Fusion four-lane coverage failed: {fusion}")
+if not (fusion.get("source_independence") or {}).get("status"):
+    raise SystemExit(f"Temporal Fusion source independence missing: {fusion}")
+
+claim = payload(
+    "research_add_claim",
+    {
+        "run_id": run["run_id"],
+        "statement": "Current official live state.",
+        "classification": "VERIFIED",
+        "observation_type": "ACTUAL",
+        "supporting_evidence_ids": [live["evidence_id"]],
+    },
+)
+invalid = gateway.call_tool(
+    "research_create_output",
+    {
+        "run_id": run["run_id"],
+        "consumer_type": "startup_acceptance",
+        "output_type": "ANSWER",
+        "fragments": [
+            {
+                "content": "Invalid semantic promotion.",
+                "claim_ids": [claim["claim_id"]],
+                "asserted_observation_type": "MIXED",
+            }
+        ],
+    },
+)
+if not invalid.get("isError"):
+    raise SystemExit("semantic integrity accepted invalid MIXED promotion")
+
+output = payload(
+    "research_create_output",
+    {
+        "run_id": run["run_id"],
+        "consumer_type": "startup_acceptance",
+        "output_type": "ANSWER",
+        "fragments": [
+            {
+                "content": "Current official live state.",
+                "claim_ids": [claim["claim_id"]],
+                "asserted_observation_type": "ACTUAL",
+            }
+        ],
+    },
+)
+output_audit = payload("research_audit_output", {"output_id": output["output_id"]})
+run_audit = payload("research_audit_run", {"run_id": run["run_id"]})
+if not output_audit.get("passed"):
+    raise SystemExit(f"Dual-Temporal output audit failed: {output_audit}")
+if not run_audit.get("passed"):
+    raise SystemExit(f"Dual-Temporal run audit failed: {run_audit}")
+
+print(
+    "__AHMED_DUAL_TEMPORAL_STARTUP_ACCEPTANCE__"
+    + json.dumps(
+        {
+            "live": live_eval["validity_status"],
+            "recent": recent_eval["validity_status"],
+            "historical": historical_eval["validity_status"],
+            "structural": structural_eval["validity_status"],
+            "live_gate": live_gate["status"],
+            "fusion": fusion["classification"],
+            "source_independence": fusion["source_independence"]["status"],
+            "semantic_guard": "REJECTED_INVALID_MIXED",
+            "output_audit": output_audit["passed"],
+            "run_audit": run_audit["passed"],
+            "budget": budget,
+        },
+        ensure_ascii=False,
+    )
+)
+PY
+    echo "Ahmed Dual-Temporal startup acceptance passed"
+    ;;
+esac
+
 if [ -n "${AHMED_TOOLBOX_BROWSER_E2E_URL:-}" ]; then
   echo "Running Ahmed ToolBox YouTube Browser Use E2E acceptance"
   python - <<'PY'
