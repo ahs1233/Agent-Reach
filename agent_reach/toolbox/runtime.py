@@ -29,11 +29,6 @@ _MAX_STEPS = 50
 _MAX_PARALLEL = 8
 _MAX_RESULT_CHARS = 24_000
 _STEP_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
-_BLOCKED_RECURSIVE_TOOLS = {
-    "runtime_execute_workflow",
-    "runtime_delegate",
-    "runtime_skill_execute",
-}
 
 
 def _now() -> str:
@@ -123,7 +118,10 @@ def validate_workflow(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
         tool_name = str(raw.get("tool_name") or "").strip()
         if not tool_name:
             raise ValueError(f"step {step_id} requires tool_name")
-        if tool_name in _BLOCKED_RECURSIVE_TOOLS or tool_name.startswith("orchestration_"):
+        # The runtime executor itself denies every nested runtime_/orchestration_
+        # call. Reject them during DAG validation too, so a workflow cannot pass
+        # validation and then degrade to PARTIAL with "runtime recursion denied".
+        if tool_name.startswith(("runtime_", "orchestration_")):
             raise ValueError(f"recursive control-plane tool denied in workflow: {tool_name}")
         arguments = raw.get("arguments") or {}
         if not isinstance(arguments, dict):
