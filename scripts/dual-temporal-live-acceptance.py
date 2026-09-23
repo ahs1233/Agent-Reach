@@ -323,7 +323,7 @@ def main() -> int:
             ],
         },
     )
-    if contradiction.get("selected_evidence_id") != live["evidence_id"]:
+    if contradiction.get("winner_evidence_id") != live["evidence_id"]:
         raise RuntimeError(
             f"contradiction resolver did not prefer current official LIVE: {contradiction}"
         )
