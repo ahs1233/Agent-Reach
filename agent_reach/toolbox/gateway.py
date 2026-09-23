@@ -32,6 +32,8 @@ from .orchestration_mcp import handle_orchestration_tool, orchestration_tool_spe
 from .research import ResearchStore
 from .research_mcp import handle_research_tool, research_tool_specs
 from .retrieval import retrieve_with_fallback
+from .runtime import RuntimeStore
+from .runtime_mcp import handle_runtime_tool, runtime_tool_specs
 from .video import ingest_media
 
 _MAX_REMOTE_RESPONSE_BYTES = 5 * 1024 * 1024
@@ -323,6 +325,8 @@ class AhmedToolboxGateway:
         research_enabled: bool | None = None,
         orchestration_store: OrchestrationStore | None = None,
         orchestration_enabled: bool | None = None,
+        runtime_store: RuntimeStore | None = None,
+        runtime_enabled: bool | None = None,
     ):
         self.agent_reach = agent_reach or AgentReach()
         self.remotes = remotes or {}
@@ -550,6 +554,8 @@ class AhmedToolboxGateway:
             tools.extend(research_tool_specs())
         if self.orchestration_enabled:
             tools.extend(orchestration_tool_specs())
+        if self.runtime_enabled:
+            tools.extend(runtime_tool_specs())
         used_names = {tool["name"] for tool in tools}
 
         for prefix, remote in sorted(self.remotes.items()):
@@ -590,6 +596,7 @@ class AhmedToolboxGateway:
                     arguments,
                     research_store=self.research_store,
                     execute_tool=self._call_tool_unorchestrated,
+                    resolve_effect=self.resolve_tool_effect,
                 )
             except (TypeError, ValueError) as exc:
                 return self._text_result(f"Orchestration error: {exc}", is_error=True)
@@ -914,10 +921,11 @@ class AhmedToolboxGateway:
                 f"tool is not allowlisted: {name}",
                 is_error=True,
             )
-        if not remote.config.can_execute(remote_name):
-            effect = remote.config.effect_class(remote_name)
+        remote_config = getattr(remote, "config", None)
+        if remote_config is not None and not remote_config.can_execute(remote_name):
+            effect = remote_config.effect_class(remote_name)
             return self._text_result(
-                f"remote trust gate denied {name}: trust={remote.config.trust}, "
+                f"remote trust gate denied {name}: trust={remote_config.trust}, "
                 f"effect={effect or 'unknown'}; explicitly classify the tool and use trust=full "
                 "only for operator-approved write-capable servers",
                 is_error=True,
