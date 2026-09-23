@@ -27,6 +27,8 @@ from agent_reach import AgentReach
 from agent_reach.channels.web import WebChannel
 
 from .research import ResearchStore
+from .orchestration import OrchestrationStore
+from .orchestration_mcp import handle_orchestration_tool, orchestration_tool_specs
 from .research_mcp import handle_research_tool, research_tool_specs
 from .retrieval import retrieve_with_fallback
 from .video import ingest_media
@@ -298,17 +300,29 @@ class AhmedToolboxGateway:
         agent_reach: AgentReach | None = None,
         research_store: ResearchStore | None = None,
         research_enabled: bool | None = None,
+        orchestration_store: OrchestrationStore | None = None,
+        orchestration_enabled: bool | None = None,
     ):
         self.agent_reach = agent_reach or AgentReach()
         self.remotes = remotes or {}
+        self.orchestration_enabled = (
+            _env_flag("AHMED_ORCHESTRATION_ENABLED", False)
+            if orchestration_enabled is None
+            else bool(orchestration_enabled)
+        )
         self.research_enabled = (
             _env_flag("AHMED_RESEARCH_ENABLED", False)
             if research_enabled is None
             else bool(research_enabled)
-        )
+        ) or self.orchestration_enabled
         self.research_store = (
             research_store or ResearchStore.from_environment()
             if self.research_enabled
+            else None
+        )
+        self.orchestration_store = (
+            orchestration_store or OrchestrationStore.from_environment()
+            if self.orchestration_enabled
             else None
         )
 
@@ -465,6 +479,8 @@ class AhmedToolboxGateway:
         tools = list(self._local_tool_specs())
         if self.research_enabled:
             tools.extend(research_tool_specs())
+        if self.orchestration_enabled:
+            tools.extend(orchestration_tool_specs())
         used_names = {tool["name"] for tool in tools}
 
         for prefix, remote in sorted(self.remotes.items()):
@@ -496,6 +512,27 @@ class AhmedToolboxGateway:
         return tools
 
     def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        arguments = arguments or {}
+        if self.orchestration_enabled and self.orchestration_store is not None:
+            try:
+                orchestration_result = handle_orchestration_tool(
+                    self.orchestration_store,
+                    name,
+                    arguments,
+                    research_store=self.research_store,
+                    execute_tool=self._call_tool_unorchestrated,
+                )
+            except (TypeError, ValueError) as exc:
+                return self._text_result(f"Orchestration error: {exc}", is_error=True)
+            if orchestration_result is not None:
+                return self._text_result(
+                    json.dumps(orchestration_result, ensure_ascii=False, default=str)
+                )
+        return self._call_tool_unorchestrated(name, arguments)
+
+    def _call_tool_unorchestrated(
+        self, name: str, arguments: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         arguments = arguments or {}
 
         if self.research_enabled and self.research_store is not None:
@@ -642,7 +679,7 @@ class AhmedToolboxGateway:
             try:
                 outcome = retrieve_with_fallback(
                     url,
-                    call_tool=lambda tool_name, tool_args: self.call_tool(
+                    call_tool=lambda tool_name, tool_args: self._call_tool_unorchestrated(
                         tool_name,
                         tool_args,
                     ),
