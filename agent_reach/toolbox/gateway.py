@@ -99,7 +99,7 @@ class RemoteMCPConfig:
             return False
         effect = self.effect_class(tool_name)
         if self.trust == "full":
-            return effect is not None
+            return True
         return effect == "SE0"
 
 
