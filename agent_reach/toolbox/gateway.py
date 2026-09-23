@@ -12,6 +12,7 @@ exposed by default.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
@@ -34,6 +35,7 @@ from .research_mcp import handle_research_tool, research_tool_specs
 from .retrieval import retrieve_with_fallback
 from .runtime import RuntimeStore
 from .runtime_mcp import handle_runtime_tool, runtime_tool_specs
+from .subagent import SubagentModelClient, SubagentModelError
 from .video import ingest_media
 
 _MAX_REMOTE_RESPONSE_BYTES = 5 * 1024 * 1024
@@ -361,6 +363,9 @@ class AhmedToolboxGateway:
             if self.runtime_enabled
             else None
         )
+        self.subagent_client = (
+            SubagentModelClient.from_environment() if self.runtime_enabled else None
+        )
 
     @classmethod
     def from_environment(cls) -> "AhmedToolboxGateway":
@@ -623,6 +628,12 @@ class AhmedToolboxGateway:
                     name,
                     arguments,
                     execute_step=self._runtime_execute_step,
+                    execute_agent=self._runtime_execute_agent,
+                    agent_status=(
+                        self.subagent_client.status()
+                        if self.subagent_client is not None
+                        else {"available": False}
+                    ),
                     orchestration_store=self.orchestration_store,
                 )
             except (TypeError, ValueError) as exc:
@@ -645,6 +656,89 @@ class AhmedToolboxGateway:
         if remote is None or not remote_name:
             return None
         return remote.config.effect_class(remote_name)
+
+    def _runtime_execute_agent(
+        self,
+        task: dict[str, Any],
+        orchestration_id: str,
+    ) -> dict[str, Any]:
+        if self.subagent_client is None:
+            return {
+                "status": "error",
+                "summary": "model-backed subagents are disabled",
+                "reason": "runtime_disabled",
+            }
+        if not self.subagent_client.config.available:
+            return {
+                "status": "error",
+                "summary": "model-backed subagents are not configured",
+                "reason": "model_not_configured",
+            }
+        if self.orchestration_store is None:
+            return {
+                "status": "error",
+                "summary": "orchestration store is required for model-backed subagents",
+                "reason": "orchestration_disabled",
+            }
+
+        run = self.orchestration_store.get_run(orchestration_id)
+        role = str(task.get("role") or "adversarial_reviewer")
+        role_patterns = run["specialists"].get(role) or []
+        if not role_patterns:
+            return {
+                "status": "error",
+                "summary": f"unknown subagent role: {role}",
+                "reason": "unknown_role",
+            }
+        requested_patterns = [
+            str(item)
+            for item in (task.get("tool_allowlist") or ["*"])
+            if str(item).strip()
+        ]
+        if not requested_patterns:
+            requested_patterns = ["*"]
+
+        available_specs: list[dict[str, Any]] = []
+        for spec in self.list_tools():
+            tool_name = str(spec.get("name") or "")
+            if not tool_name or tool_name.startswith(("runtime_", "orchestration_")):
+                continue
+            if not any(fnmatch.fnmatchcase(tool_name, pattern) for pattern in role_patterns):
+                continue
+            if not any(
+                fnmatch.fnmatchcase(tool_name, pattern)
+                for pattern in requested_patterns
+            ):
+                continue
+            available_specs.append(spec)
+
+        if not available_specs:
+            return {
+                "status": "error",
+                "summary": "subagent has no tools after role/allowlist filtering",
+                "reason": "empty_toolset",
+            }
+
+        try:
+            return self.subagent_client.run(
+                goal=str(task.get("goal") or task.get("objective") or ""),
+                role=role,
+                tools=available_specs,
+                execute_tool=lambda name, arguments, tool_role: self._runtime_execute_step(
+                    name, arguments, tool_role, orchestration_id
+                ),
+                context=str(task.get("context") or ""),
+                max_turns=(
+                    int(task["max_turns"]) if task.get("max_turns") is not None else None
+                ),
+            )
+        except (SubagentModelError, TypeError, ValueError) as exc:
+            return {
+                "schema": "ahmed-runtime-model-subagent/v1",
+                "status": "error",
+                "summary": f"{type(exc).__name__}: {exc}",
+                "reason": "subagent_failure",
+            }
 
     def _runtime_execute_step(
         self,
