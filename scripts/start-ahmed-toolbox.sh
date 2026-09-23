@@ -528,6 +528,17 @@ PY
     ;;
 esac
 
+case "${AHMED_DUAL_TEMPORAL_LIVE_ACCEPTANCE:-0}" in
+  1|true|yes|on)
+    echo "Running Ahmed Dual-Temporal live-network acceptance"
+    if python scripts/dual-temporal-live-acceptance.py; then
+      echo "Ahmed Dual-Temporal live-network acceptance passed"
+    else
+      echo "Ahmed Dual-Temporal live-network acceptance failed (non-fatal)" >&2
+    fi
+    ;;
+esac
+
 if [ -n "${AHMED_TOOLBOX_BROWSER_E2E_URL:-}" ]; then
   echo "Running Ahmed ToolBox YouTube Browser Use E2E acceptance"
   python - <<'PY'
