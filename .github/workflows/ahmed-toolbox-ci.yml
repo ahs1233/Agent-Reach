@@ -10,7 +10,10 @@ on:
       - "integrations/panwatch/**"
       - "tests/test_toolbox_gateway.py"
       - "tests/test_toolbox_orchestration.py"
+      - "tests/test_toolbox_browser_use.py"
       - "tests/test_xau_intraday_integration.py"
+      - "Dockerfile"
+      - "scripts/start-ahmed-toolbox.sh"
       - "pyproject.toml"
       - ".github/workflows/ahmed-toolbox-ci.yml"
 
@@ -34,13 +37,15 @@ jobs:
           python -m pip install -e ".[dev]"
 
       - name: Syntax
-        run: python -m compileall -q agent_reach integrations/panwatch
+        run: |
+          python -m compileall -q agent_reach integrations/panwatch
+          sh -n scripts/start-ahmed-toolbox.sh
 
       - name: Ruff
         run: |
           ruff check agent_reach/toolbox
-          ruff check tests/test_toolbox_gateway.py tests/test_toolbox_orchestration.py tests/test_xau_intraday_integration.py
+          ruff check tests/test_toolbox_gateway.py tests/test_toolbox_orchestration.py tests/test_toolbox_browser_use.py tests/test_xau_intraday_integration.py
 
       - name: Focused tests
         run: |
-          pytest -q tests/test_toolbox_gateway.py tests/test_toolbox_orchestration.py tests/test_xau_intraday_integration.py
+          pytest -q tests/test_toolbox_gateway.py tests/test_toolbox_orchestration.py tests/test_toolbox_browser_use.py tests/test_xau_intraday_integration.py
