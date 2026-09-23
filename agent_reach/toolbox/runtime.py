@@ -241,6 +241,15 @@ class RuntimeStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_runtime_skill_outcomes
                   ON runtime_skill_outcomes(name, revision, id);
+                CREATE TABLE IF NOT EXISTS runtime_skill_candidates (
+                  candidate_key TEXT PRIMARY KEY,
+                  workflow_json TEXT NOT NULL,
+                  successes INTEGER NOT NULL DEFAULT 0,
+                  failures INTEGER NOT NULL DEFAULT 0,
+                  promoted_skill_name TEXT,
+                  first_seen_at TEXT NOT NULL,
+                  last_seen_at TEXT NOT NULL
+                );
                 """
             )
             try:
@@ -428,6 +437,106 @@ class RuntimeStore:
             out.append(item)
         return out
 
+    def observe_workflow(
+        self,
+        workflow: list[dict[str, Any]],
+        *,
+        success: bool,
+        promotion_threshold: int = 3,
+    ) -> dict[str, Any]:
+        """Track repeated workflows and conservatively promote proven procedures."""
+        normalized = validate_workflow(workflow)
+        workflow_json = _dump(normalized)
+        digest = hashlib.sha256(workflow_json.encode("utf-8")).hexdigest()
+        key = f"wf_{digest[:24]}"
+        now = _now()
+        promotion_threshold = max(2, min(int(promotion_threshold), 20))
+
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM runtime_skill_candidates WHERE candidate_key=?", (key,)
+            ).fetchone()
+            if row:
+                successes = int(row["successes"]) + (1 if success else 0)
+                failures = int(row["failures"]) + (0 if success else 1)
+                promoted = row["promoted_skill_name"]
+                conn.execute(
+                    "UPDATE runtime_skill_candidates SET successes=?,failures=?,last_seen_at=? "
+                    "WHERE candidate_key=?",
+                    (successes, failures, now, key),
+                )
+            else:
+                successes = 1 if success else 0
+                failures = 0 if success else 1
+                promoted = None
+                conn.execute(
+                    "INSERT INTO runtime_skill_candidates"
+                    "(candidate_key,workflow_json,successes,failures,promoted_skill_name,"
+                    "first_seen_at,last_seen_at) VALUES (?,?,?,?,?,?,?)",
+                    (key, workflow_json, successes, failures, None, now, now),
+                )
+
+        promoted_now = None
+        # "Complex task" guard: one-tool health checks do not become skills.
+        eligible = (
+            len(normalized) >= 2
+            and promoted is None
+            and failures == 0
+            and successes >= promotion_threshold
+        )
+        if eligible:
+            skill_name = f"auto-{digest[:12]}"
+            skill = self.save_skill(
+                skill_name,
+                "Auto-learned from a repeatedly successful Ahmed Runtime workflow.",
+                normalized,
+                source="auto_promoted_candidate",
+                metadata={
+                    "candidate_key": key,
+                    "observed_successes": successes,
+                    "observed_failures": failures,
+                    "workflow_hash": digest,
+                },
+                change_note=(
+                    f"Auto-promoted after {successes} successful identical executions "
+                    "with no observed failures"
+                ),
+            )
+            with self._lock, self._connect() as conn:
+                conn.execute(
+                    "UPDATE runtime_skill_candidates SET promoted_skill_name=?,last_seen_at=? "
+                    "WHERE candidate_key=? AND promoted_skill_name IS NULL",
+                    (skill_name, _now(), key),
+                )
+            promoted_now = {
+                "name": skill["name"],
+                "revision": skill["revision"],
+                "candidate_key": key,
+            }
+
+        return {
+            "candidate_key": key,
+            "workflow_hash": digest,
+            "successes": successes,
+            "failures": failures,
+            "promotion_threshold": promotion_threshold,
+            "promoted_skill_name": (
+                promoted_now["name"] if promoted_now else promoted
+            ),
+            "promoted_now": promoted_now,
+        }
+
+    def list_skill_candidates(self, limit: int = 50) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 200))
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT candidate_key,successes,failures,promoted_skill_name,"
+                "first_seen_at,last_seen_at FROM runtime_skill_candidates "
+                "ORDER BY last_seen_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def save_skill(
         self,
         name: str,
@@ -528,6 +637,60 @@ class RuntimeStore:
                 (name, int(row["revision"]), 1 if success else 0, occurred_at),
             )
         return self.get_skill(name)
+
+    def maybe_auto_rollback_skill(
+        self,
+        name: str,
+        *,
+        failure_threshold: int = 3,
+        minimum_prior_successes: int = 2,
+    ) -> dict[str, Any] | None:
+        """Recover from a clearly regressed revision using proven historical evidence."""
+        current = self.get_skill(name)
+        current_revision = int(current["revision"])
+        if current_revision <= 1:
+            return None
+        failure_threshold = max(2, min(int(failure_threshold), 20))
+        minimum_prior_successes = max(1, min(int(minimum_prior_successes), 20))
+        if int(current["failures"]) < failure_threshold or int(current["successes"]) > 0:
+            return None
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT revision,
+                          SUM(CASE WHEN success=1 THEN 1 ELSE 0 END) AS successes,
+                          SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) AS failures
+                   FROM runtime_skill_outcomes
+                   WHERE name=? AND revision<?
+                   GROUP BY revision
+                   ORDER BY revision DESC""",
+                (name, current_revision),
+            ).fetchall()
+
+        best_revision = None
+        best_score = -1.0
+        for row in rows:
+            successes = int(row["successes"] or 0)
+            failures = int(row["failures"] or 0)
+            if successes < minimum_prior_successes:
+                continue
+            score = (successes + 1.0) / (successes + failures + 2.0)
+            if score >= 0.75 and score > best_score:
+                best_revision = int(row["revision"])
+                best_score = score
+
+        if best_revision is None:
+            return None
+
+        rolled = self.rollback_skill(name, best_revision)
+        return {
+            "trigger": "regression_guard",
+            "from_revision": current_revision,
+            "to_historical_revision": best_revision,
+            "new_active_revision": int(rolled["revision"]),
+            "historical_score": best_score,
+            "failure_threshold": failure_threshold,
+        }
 
     def rollback_skill(self, name: str, revision: int | None = None) -> dict[str, Any]:
         current = self.get_skill(name)
