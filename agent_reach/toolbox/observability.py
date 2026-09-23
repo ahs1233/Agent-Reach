@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 _REDACT_RE = re.compile(
-    r"(?i)(?:bearer\\s+|token[=:]\\s*|api[_-]?key[=:]\\s*|password[=:]\\s*)[^\\s,;]+"
+    r"(?i)(?:bearer\s+|token[=:]\s*|api[_-]?key[=:]\s*|password[=:]\s*)[^\s,;]+"
 )
 
 
