@@ -6,6 +6,18 @@ CDP_URL="${BU_CDP_URL:-http://127.0.0.1:9222}"
 
 mkdir -p "$PROFILE_DIR"
 
+# yt-dlp requires an explicitly enabled JS runtime when Node is used.
+# Railway already ships Node for the browser stack, so keep the runtime config
+# self-healing instead of leaving reach_doctor in a permanent warning state.
+if command -v yt-dlp >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
+  YTDLP_CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME:-/root}/.config}/yt-dlp"
+  YTDLP_CONFIG_FILE="$YTDLP_CONFIG_DIR/config"
+  mkdir -p "$YTDLP_CONFIG_DIR"
+  if ! grep -qxF -- '--js-runtimes node' "$YTDLP_CONFIG_FILE" 2>/dev/null; then
+    printf '%s\n' '--js-runtimes node' >>"$YTDLP_CONFIG_FILE"
+  fi
+fi
+
 chromium \
   --headless=new \
   --no-sandbox \
