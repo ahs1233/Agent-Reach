@@ -1,9 +1,11 @@
 import json
 
+import pytest
+
 from agent_reach.toolbox.gateway import AhmedToolboxGateway
 from agent_reach.toolbox.orchestration import OrchestrationStore
 from agent_reach.toolbox.research import ResearchStore
-from agent_reach.toolbox.runtime import RuntimeStore, execute_workflow
+from agent_reach.toolbox.runtime import RuntimeStore, execute_workflow, validate_workflow
 
 
 class FakeReach:
@@ -53,6 +55,23 @@ def test_runtime_read_only_workflow_collapses_multiple_calls(tmp_path):
     assert result["status"] == "ok"
     assert result["ok_count"] == 2
     assert result["step_count"] == 2
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "runtime_status",
+        "runtime_memory_search",
+        "runtime_execute_workflow",
+        "orchestration_status",
+        "orchestration_execute",
+    ],
+)
+def test_runtime_workflow_rejects_nested_control_plane_tools(tool_name):
+    with pytest.raises(ValueError, match="recursive control-plane tool denied"):
+        validate_workflow([
+            {"id": "nested", "tool_name": tool_name, "arguments": {}},
+        ])
 
 
 def test_runtime_requires_orchestration_for_mutating_research_tool(tmp_path):
