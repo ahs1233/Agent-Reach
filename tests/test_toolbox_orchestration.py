@@ -1,7 +1,10 @@
 import json
 
+import pytest
+
 from agent_reach.toolbox.gateway import AhmedToolboxGateway
 from agent_reach.toolbox.orchestration import OrchestrationStore
+from agent_reach.toolbox.orchestration_mcp import orchestration_tool_specs
 from agent_reach.toolbox.research import ResearchStore
 
 
@@ -123,6 +126,49 @@ def test_role_boundary_denies_cross_lane_tool(tmp_path):
     }))
     assert denied["executed"] is False
     assert denied["authorization"]["reason"] == "tool_not_allowed_for_role"
+
+
+def test_specialist_shape_is_rejected_before_authorization(tmp_path):
+    store = OrchestrationStore(str(tmp_path / "orch.db"))
+    with pytest.raises(ValueError, match="specialists"):
+        store.create_run(
+            "malformed specialists",
+            mode="general",
+            specialists={
+                "orchestrator": {
+                    "allowed_tools": ["reach_doctor"],
+                },
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    ("specialists", "message"),
+    [
+        ({"": ["reach_doctor"]}, "role names"),
+        ({"orchestrator": []}, "non-empty array"),
+        ({"orchestrator": [""]}, "non-empty array"),
+        ({"orchestrator": "reach_doctor"}, "non-empty array"),
+    ],
+)
+def test_specialist_role_and_pattern_validation(tmp_path, specialists, message):
+    store = OrchestrationStore(str(tmp_path / "orch.db"))
+    with pytest.raises(ValueError, match=message):
+        store.create_run(
+            "invalid specialist contract",
+            mode="general",
+            specialists=specialists,
+        )
+
+
+def test_orchestration_start_mcp_schema_requires_role_to_pattern_arrays():
+    start = next(spec for spec in orchestration_tool_specs() if spec["name"] == "orchestration_start")
+    schema = start["inputSchema"]["properties"]["specialists"]
+    assert schema["type"] == "object"
+    assert schema["minProperties"] == 1
+    assert schema["additionalProperties"]["type"] == "array"
+    assert schema["additionalProperties"]["minItems"] == 1
+    assert schema["additionalProperties"]["items"] == {"type": "string", "minLength": 1}
 
 
 def test_research_run_scope_cannot_be_swapped(tmp_path):
