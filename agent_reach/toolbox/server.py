@@ -11,14 +11,17 @@ from typing import Any
 from .gateway import AhmedToolboxGateway, RemoteMCPError
 
 _MAX_REQUEST_BYTES = 1024 * 1024
-_SERVER_VERSION = "0.1.1"
+_SERVER_VERSION = "0.1.2"
+_PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18")
 
 
 def _initialize_result(params: dict[str, Any]) -> dict[str, Any]:
-    """Build MCP initialize metadata for clients that cache tool schemas."""
+    """Negotiate a supported version without promising unavailable notifications."""
+    requested = params.get("protocolVersion")
     return {
-        "protocolVersion": params.get("protocolVersion") or "2024-11-05",
-        "capabilities": {"tools": {"listChanged": True}},
+        "protocolVersion": requested if requested in _PROTOCOL_VERSIONS else _PROTOCOL_VERSIONS[-1],
+        # Stateless JSON responses cannot deliver unsolicited list_changed events.
+        "capabilities": {"tools": {"listChanged": False}},
         "serverInfo": {"name": "Ahmed ToolBox", "version": _SERVER_VERSION},
     }
 
@@ -68,6 +71,13 @@ class ToolboxRequestHandler(BaseHTTPRequestHandler):
         if self.path.rstrip("/") == "/health":
             self._send_json(200, {"status": "ok", "service": "ahmed-toolbox"})
             return
+        if self.path.rstrip("/") in {"", "/mcp"}:
+            self.send_response(405)
+            self.send_header("Allow", "POST")
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
         self._send_json(404, {"status": "not_found"})
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
@@ -76,6 +86,10 @@ class ToolboxRequestHandler(BaseHTTPRequestHandler):
             return
         if not self._authorized():
             self._send_json(401, _rpc_error(None, -32001, "unauthorized"))
+            return
+        protocol = self.headers.get("MCP-Protocol-Version")
+        if protocol is not None and protocol not in _PROTOCOL_VERSIONS:
+            self._send_json(400, _rpc_error(None, -32600, "unsupported MCP protocol version"))
             return
 
         try:
@@ -99,9 +113,18 @@ class ToolboxRequestHandler(BaseHTTPRequestHandler):
         method = payload.get("method")
         req_id = payload.get("id")
         params = payload.get("params") or {}
+        if not isinstance(params, dict):
+            self._send_json(400, _rpc_error(req_id, -32602, "params must be an object"))
+            return
+
+        # Log method names only: never credentials, arguments, or result content.
+        if method in {"initialize", "tools/list"}:
+            print(json.dumps({"event": "mcp_discovery", "method": method}), flush=True)
 
         if req_id is None and isinstance(method, str) and method.startswith("notifications/"):
             self.send_response(202)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             return
 

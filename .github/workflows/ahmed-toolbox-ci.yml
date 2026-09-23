@@ -9,6 +9,9 @@ on:
       - "agent_reach/toolbox/**"
       - "integrations/panwatch/**"
       - "tests/test_toolbox_gateway.py"
+      - "tests/test_toolbox_server.py"
+      - "tests/test_mcp_http_discovery.py"
+      - "scripts/probe_mcp_discovery.py"
       - "tests/test_toolbox_orchestration.py"
       - "tests/test_toolbox_runtime.py"
       - "tests/test_toolbox_subagent.py"
@@ -52,4 +55,5 @@ jobs:
 
       - name: Focused tests
         run: |
+          pytest -q tests/test_toolbox_server.py tests/test_mcp_http_discovery.py
           pytest -q tests/test_toolbox_gateway.py tests/test_toolbox_orchestration.py tests/test_toolbox_runtime.py tests/test_toolbox_subagent.py tests/test_runtime_trust_gate.py tests/test_toolbox_browser_use.py tests/test_xau_intraday_integration.py tests/test_toolbox_ace.py
