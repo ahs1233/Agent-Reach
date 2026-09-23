@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from agent_reach.toolbox.research import ResearchStore
+from agent_reach.toolbox.retrieval import retrieve_with_fallback
 from agent_reach.toolbox.temporal import (
     bounded_temporal_budget,
     temporal_fusion,
@@ -198,6 +199,71 @@ def test_e_changed_rule_is_not_current_structural_evidence() -> None:
     assert result["validity_reason"] == "NO_LONGER_IN_FORCE"
 
 
+def test_f_http_403_fallback_succeeds_without_aborting() -> None:
+    calls: list[str] = []
+
+    def caller(name: str, arguments: dict) -> dict:
+        del arguments
+        calls.append(name)
+        if name == "reach_read_url":
+            return {"content": [{"type": "text", "text": "HTTP 403 Forbidden"}], "isError": True}
+        if name == "scrapling__fetch":
+            return {"content": [{"type": "text", "text": "usable " + "x" * 400}], "isError": False}
+        raise AssertionError(f"unexpected tool: {name}")
+
+    result = retrieve_with_fallback(
+        "https://example.com/blocked",
+        call_tool=caller,
+        min_chars=200,
+    )
+
+    assert result["status"] == "SUCCESS"
+    assert result["attempts"][0]["reason_code"] == "HTTP_403_FORBIDDEN"
+    assert result["final_tool"] == "scrapling__fetch"
+    assert calls == ["reach_read_url", "scrapling__fetch"]
+
+
+def test_g_429_rate_limit_falls_through_to_targeted_search() -> None:
+    calls: list[str] = []
+
+    def caller(name: str, arguments: dict) -> dict:
+        calls.append(name)
+        if name == "reach_web_search":
+            assert arguments["query"] == "current official state"
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "credible alternative https://example.org/current",
+                    }
+                ],
+                "isError": False,
+            }
+        return {
+            "content": [{"type": "text", "text": "429 Too Many Requests - rate limit"}],
+            "isError": True,
+        }
+
+    result = retrieve_with_fallback(
+        "https://example.com/rate-limited",
+        call_tool=caller,
+        browser_tool="reach_browser_read_url",
+        discovery_tool="reach_web_search",
+        discovery_query="current official state",
+    )
+
+    assert result["status"] == "ALTERNATIVE_DISCOVERED"
+    assert result["reason_code"] == "ORIGINAL_SOURCE_UNAVAILABLE_ALTERNATIVES_DISCOVERED"
+    assert any(item["reason_code"] == "RATE_LIMITED" for item in result["attempts"])
+    assert calls == [
+        "reach_read_url",
+        "scrapling__fetch",
+        "scrapling__stealthy_fetch",
+        "reach_browser_read_url",
+        "reach_web_search",
+    ]
+
+
 def test_h_temporal_layer_cannot_break_semantic_integrity() -> None:
     store = ResearchStore(":memory:")
     run = store.create_run("Semantic integrity")
@@ -267,13 +333,31 @@ def test_i_diplomatic_contact_does_not_imply_structural_normalization() -> None:
 
 def test_j_temporal_budget_is_deep_but_bounded() -> None:
     budget = bounded_temporal_budget()
+    calls: list[str] = []
+
+    def caller(name: str, arguments: dict) -> dict:
+        del arguments
+        calls.append(name)
+        return {
+            "content": [{"type": "text", "text": "backend unavailable"}],
+            "isError": True,
+        }
+
+    result = retrieve_with_fallback(
+        "https://example.com/unavailable",
+        call_tool=caller,
+        browser_tool="reach_browser_read_url",
+        discovery_tool="reach_web_search",
+    )
 
     assert budget == {
         "max_total_retrieval_calls": 12,
         "max_calls_per_lane": 3,
         "max_fallback_attempts_per_source": 5,
     }
-    assert budget["max_total_retrieval_calls"] <= 12
+    assert result["status"] == "SOURCE_UNAVAILABLE"
+    assert len(calls) == budget["max_fallback_attempts_per_source"]
+    assert not any(name.startswith(("runtime_", "orchestration_")) for name in calls)
 
 
 def test_final_live_refresh_gate_blocks_then_passes_after_explicit_refresh() -> None:
