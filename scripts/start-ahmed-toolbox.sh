@@ -37,4 +37,16 @@ until curl -fsS "$CDP_URL/json/version" >/dev/null 2>&1; do
 done
 
 echo "Ahmed ToolBox browser runtime ready at $CDP_URL"
+
+if ! timeout 30s browser-use >/tmp/ahmed-browser-use-smoke.log 2>&1 <<'PY'
+info = page_info()
+print(info)
+PY
+then
+  echo "Browser Use CLI could not attach to Chromium CDP" >&2
+  cat /tmp/ahmed-browser-use-smoke.log >&2 || true
+  exit 1
+fi
+
+echo "Ahmed ToolBox Browser Use CLI/CDP smoke test passed"
 exec ahmed-toolbox
