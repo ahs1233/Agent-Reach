@@ -61,7 +61,7 @@ def _result_text(result: dict[str, Any]) -> str:
         return text
 
     if isinstance(parsed, dict):
-        for key in ("content", "text", "markdown", "html", "body"):
+        for key in ("content", "text", "markdown", "html", "body", "visible_text"):
             value = parsed.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()
