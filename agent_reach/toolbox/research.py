@@ -2185,6 +2185,7 @@ class ResearchStore:
         if not unique_ids:
             raise ValueError("temporal fusion requires at least one evidence_id")
         buckets: dict[str, int] = {item: 0 for item in sorted(TEMPORAL_BUCKETS)}
+        fusion_source_ids: list[str] = []
         for evidence_id in unique_ids:
             evidence = self.get_evidence(evidence_id)
             if evidence["run_id"] != run_id:
@@ -2192,6 +2193,7 @@ class ResearchStore:
                     f"fusion evidence {evidence_id} is not in run {run_id}"
                 )
             source = self.get_source(evidence["source_id"], run_id=run_id)
+            fusion_source_ids.append(str(source["source_id"]))
             raw_bucket = evidence.get("temporal_bucket") or source.get("temporal_bucket")
             if not raw_bucket:
                 raise ValueError(
@@ -2218,6 +2220,27 @@ class ResearchStore:
             "historical": buckets["HISTORICAL"] > 0,
             "structural": buckets["STRUCTURAL"] > 0,
         }
+
+        with self._lock:
+            run_source_ids = [
+                str(row["source_id"])
+                for row in self._conn.execute(
+                    """
+                    SELECT source_id FROM research_run_sources
+                    WHERE run_id = ? ORDER BY source_id
+                    """,
+                    (run_id,),
+                ).fetchall()
+            ]
+        source_independence = assess_source_independence(
+            supporting_source_ids=list(dict.fromkeys(fusion_source_ids)),
+            sources=[
+                self.get_source(source_id, run_id=run_id)
+                for source_id in run_source_ids
+            ],
+            relationships=self.get_source_relationships(run_id),
+        )
+        result["source_independence"] = source_independence
 
         with self._lock, self._conn:
             cursor = self._conn.execute(
