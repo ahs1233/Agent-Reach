@@ -49,12 +49,22 @@ jobs:
           ruff check scripts/dual-temporal-live-acceptance.py
           ruff check tests/test_toolbox_gateway.py tests/test_toolbox_orchestration.py tests/test_toolbox_runtime.py tests/test_toolbox_subagent.py tests/test_runtime_trust_gate.py tests/test_toolbox_browser_use.py tests/test_xau_intraday_integration.py tests/test_toolbox_ace.py
           ruff check tests/test_research_dual_temporal.py tests/test_dual_temporal_gateway.py tests/test_retrieval_fallback.py
+          ruff check tests/golden tests/test_toolbox_observability.py tests/test_failure_matrix.py
+
+      - name: Ruff format
+        run: |
+          ruff format --check agent_reach/toolbox/observability.py agent_reach/toolbox/retrieval.py
+          ruff format --check tests/golden tests/test_toolbox_observability.py tests/test_failure_matrix.py
+
+      - name: Scoped mypy
+        run: mypy agent_reach/toolbox/observability.py agent_reach/toolbox/retrieval.py
 
       - name: Focused tests
         run: |
           pytest -q tests/test_toolbox_server.py tests/test_mcp_http_discovery.py
           pytest -q tests/test_toolbox_gateway.py tests/test_toolbox_orchestration.py tests/test_toolbox_runtime.py tests/test_toolbox_subagent.py tests/test_runtime_trust_gate.py tests/test_toolbox_browser_use.py tests/test_xau_intraday_integration.py tests/test_toolbox_ace.py
           pytest -q tests/test_research_dual_temporal.py tests/test_dual_temporal_gateway.py tests/test_retrieval_fallback.py
+          pytest -q tests/golden tests/test_toolbox_observability.py tests/test_failure_matrix.py
 
   full-regression:
     name: Full regression suite
@@ -74,5 +84,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
-      - name: Full pytest regression
-        run: pytest -q tests
+      - name: Full pytest regression and coverage baseline
+        run: |
+          pytest -q --cov=agent_reach.toolbox --cov-report=term --cov-report=json:coverage-toolbox.json tests
+          python - <<'PY'
+          import json
+          data = json.load(open("coverage-toolbox.json", encoding="utf-8"))
+          print(f"TOOLBOX_COVERAGE_BASELINE={data['totals']['percent_covered']:.2f}")
+          PY
