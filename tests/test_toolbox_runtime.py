@@ -186,3 +186,34 @@ def test_result_reference_is_resolved_without_model_roundtrip():
     ], execute)
     assert result["status"] == "ok"
     assert seen["value"] == 42
+
+
+def test_delegation_normalizes_missing_ids_and_caps_parent_budget(tmp_path):
+    gateway = _gateway(tmp_path)
+    parent = _payload(gateway.call_tool("orchestration_start", {
+        "objective": "bounded delegated budget",
+        "mode": "general",
+        "budget": {"tool_calls": 1, "network_calls": 0},
+    }))
+    result = _payload(gateway.call_tool("runtime_delegate", {
+        "orchestration_id": parent["orchestration_id"],
+        "tasks": [
+            {"objective": "first", "steps": [{"tool_name": "reach_doctor"}]},
+            {"objective": "second", "steps": [{"tool_name": "reach_doctor"}]},
+        ],
+        "max_parallel": 2,
+    }))
+
+    assert [task["id"] for task in result["tasks"]] == ["task_1", "task_2"]
+    children = [
+        task["result"]["child_orchestration_id"]
+        for task in result["tasks"]
+        if "result" in task and "child_orchestration_id" in task["result"]
+    ]
+    assert len(children) == 2
+    child_statuses = [
+        _payload(gateway.call_tool("orchestration_status", {"orchestration_id": child_id}))
+        for child_id in children
+    ]
+    assert sum(item["run"]["budget"]["tool_calls"] for item in child_statuses) == 1
+    assert sum(item["usage"]["tool_calls"] for item in child_statuses) <= 1
