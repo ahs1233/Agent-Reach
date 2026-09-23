@@ -39,8 +39,9 @@ dependencies = [
 
 [project.optional-dependencies]
 browser = ["playwright>=1.40"]
+interactive-browser = ["browser-use>=0.13.10,<1.0; python_version >= '3.11'"]
 cookies = ["browser-cookie3>=0.19"]
-all = ["playwright>=1.40", "mcp[cli]>=1.0", "browser-cookie3>=0.19"]
+all = ["playwright>=1.40", "mcp[cli]>=1.0", "browser-cookie3>=0.19", "browser-use>=0.13.10,<1.0; python_version >= '3.11'"]
 dev = [
     "pytest>=8.0",
     "ruff>=0.8",

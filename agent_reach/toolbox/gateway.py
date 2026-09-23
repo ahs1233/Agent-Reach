@@ -26,6 +26,7 @@ import requests
 from agent_reach import AgentReach
 from agent_reach.channels.web import WebChannel
 
+from .browser_use import inspect_youtube_page, probe_browser_use
 from .orchestration import OrchestrationStore
 from .orchestration_mcp import handle_orchestration_tool, orchestration_tool_specs
 from .research import ResearchStore
@@ -411,6 +412,35 @@ class AhmedToolboxGateway:
                 },
             },
             {
+                "name": "reach_youtube_browser_inspect",
+                "description": (
+                    "Read rendered YouTube UI through Browser Use when yt-dlp is "
+                    "insufficient. Read-only: title, description, visible text, "
+                    "and an optional bounded comment sample."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["url"],
+                    "properties": {
+                        "url": {"type": "string", "minLength": 1, "maxLength": 2000},
+                        "include_comments": {"type": "boolean", "default": False},
+                        "max_comments": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 50,
+                            "default": 20,
+                        },
+                        "timeout_seconds": {
+                            "type": "integer",
+                            "minimum": 5,
+                            "maximum": 120,
+                            "default": 45,
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "reach_media_ingest",
                 "description": "Ingest public video/audio into timestamped transcript evidence with provenance.",
                 "inputSchema": {"type": "object", "required": ["url"], "properties": {"url": {"type": "string"}, "provider": {"type": "string", "enum": ["auto", "groq", "openai"], "default": "auto"}, "language": {"type": "string"}}, "additionalProperties": False},
@@ -554,6 +584,15 @@ class AhmedToolboxGateway:
 
         if name == "reach_doctor":
             data = self.agent_reach.doctor()
+            browser = probe_browser_use()
+            data["browser_use"] = {
+                "status": "ok" if browser.available else "off",
+                "name": "Interactive Browser",
+                "message": browser.detail,
+                "tier": 1,
+                "backends": ["browser-use"],
+                "active_backend": "browser-use" if browser.available else None,
+            }
             return self._text_result(json.dumps(data, ensure_ascii=False, default=str))
 
         if name == "reach_web_search":
@@ -641,6 +680,31 @@ class AhmedToolboxGateway:
                 f"direct_exa={fallback_error[:1200]!r}"
             )
             return self._text_result(diagnostic, is_error=True)
+
+        if name == "reach_youtube_browser_inspect":
+            url = str(arguments.get("url") or "").strip()
+            if not url:
+                return self._text_result("url is required", is_error=True)
+            try:
+                evidence = inspect_youtube_page(
+                    url,
+                    include_comments=bool(arguments.get("include_comments", False)),
+                    max_comments=int(arguments.get("max_comments") or 20),
+                    timeout_seconds=int(arguments.get("timeout_seconds") or 45),
+                )
+            except (TypeError, ValueError) as exc:
+                return self._text_result(
+                    f"YouTube browser inspection input error: {exc}",
+                    is_error=True,
+                )
+            except Exception as exc:  # noqa: BLE001 - map optional browser failure into MCP result
+                return self._text_result(
+                    f"YouTube browser inspection failed: {exc}",
+                    is_error=True,
+                )
+            return self._text_result(
+                json.dumps(evidence, ensure_ascii=False, default=str)
+            )
 
         if name == "reach_media_ingest":
             url = str(arguments.get("url") or "").strip()
