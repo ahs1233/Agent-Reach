@@ -277,3 +277,55 @@ def test_verification_fails_with_unresolved_authorization(tmp_path):
     report = build_verification_report(store, oid)
     assert report["passed"] is False
     assert report["checks"]["all_authorizations_resolved"] is False
+
+
+def test_full_general_orchestration_lifecycle(tmp_path):
+    gateway = AhmedToolboxGateway(
+        agent_reach=FakeReach(),
+        research_store=ResearchStore(str(tmp_path / "research.db")),
+        orchestration_store=OrchestrationStore(str(tmp_path / "orch.db")),
+        orchestration_enabled=True,
+    )
+    started = _payload(gateway.call_tool("orchestration_start", {
+        "objective": "end to end control-plane smoke test",
+        "mode": "general",
+        "budget": {"tool_calls": 3, "network_calls": 0},
+    }))
+    oid = started["orchestration_id"]
+
+    executed = _payload(gateway.call_tool("orchestration_execute", {
+        "orchestration_id": oid,
+        "role": "orchestrator",
+        "tool_name": "reach_doctor",
+        "arguments": {},
+    }))
+    assert executed["executed"] is True
+    assert executed["result"]["isError"] is False
+
+    verified = _payload(gateway.call_tool("orchestration_verify", {
+        "orchestration_id": oid,
+    }))
+    assert verified["passed"] is True
+    assert verified["checks"]["journal_integrity"] is True
+    assert verified["checks"]["all_authorizations_resolved"] is True
+
+    handoff = _payload(gateway.call_tool("orchestration_handoff", {
+        "orchestration_id": oid,
+    }))
+    assert handoff["verification"]["passed"] is True
+    assert handoff["usage"]["tool_calls"] == 1
+
+    completed = _payload(gateway.call_tool("orchestration_complete", {
+        "orchestration_id": oid,
+    }))
+    assert completed["completed"] is True
+    assert completed["run"]["status"] == "COMPLETE"
+
+    denied_after_complete = _payload(gateway.call_tool("orchestration_execute", {
+        "orchestration_id": oid,
+        "role": "orchestrator",
+        "tool_name": "reach_doctor",
+        "arguments": {},
+    }))
+    assert denied_after_complete["executed"] is False
+    assert denied_after_complete["authorization"]["reason"] == "run_not_active"
