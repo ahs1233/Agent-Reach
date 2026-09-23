@@ -754,8 +754,8 @@ class RuntimeStore:
             outcomes = conn.execute(
                 "SELECT revision,success,occurred_at,audited_valid,duration_ms "
                 "FROM runtime_skill_outcomes "
-                "WHERE name=? AND revision=? ORDER BY id DESC LIMIT 20",
-                (name, int(item["revision"])),
+                "WHERE name=? ORDER BY id DESC LIMIT 20",
+                (name,),
             ).fetchall()
         item["recent_outcomes"] = [
             {
