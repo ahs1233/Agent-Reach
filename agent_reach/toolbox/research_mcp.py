@@ -25,6 +25,7 @@ def research_tool_specs() -> list[dict[str, Any]]:
         "SCENARIO",
         "SPECULATION",
     ]
+    temporal_bucket_enum = ["LIVE", "RECENT", "HISTORICAL", "STRUCTURAL"]
     return [
         {
             "name": "research_start_run",
@@ -82,6 +83,8 @@ def research_tool_specs() -> list[dict[str, Any]]:
                     "primary_source": {"type": "boolean"},
                     "publication_date": {"type": "string"},
                     "data_cutoff": {"type": "string"},
+                    "observation_time": {"type": "string"},
+                    "temporal_bucket": {"type": "string", "enum": temporal_bucket_enum},
                     "canonical_url": {"type": "string"},
                     "discovered_by": {"type": "string"},
                     "source_family_id": {"type": "string"},
@@ -167,6 +170,7 @@ def research_tool_specs() -> list[dict[str, Any]]:
                     "geography": {"type": "string"},
                     "reference_period": {"type": "string"},
                     "observation_type": {"type": "string", "enum": observation_enum},
+                    "temporal_bucket": {"type": "string", "enum": temporal_bucket_enum},
                     "forecast_horizon": {"type": "string"},
                     "definition": {"type": "string"},
                     "extraction_method": {"type": "string"},
@@ -441,6 +445,8 @@ def handle_research_tool(
             primary_source=arguments.get("primary_source"),
             publication_date=arguments.get("publication_date"),
             data_cutoff=arguments.get("data_cutoff"),
+            observation_time=arguments.get("observation_time"),
+            temporal_bucket=arguments.get("temporal_bucket"),
             canonical_url=arguments.get("canonical_url"),
             discovered_by=arguments.get("discovered_by"),
             source_family_id=arguments.get("source_family_id"),
@@ -470,6 +476,7 @@ def handle_research_tool(
             unit=arguments.get("unit"),
             geography=arguments.get("geography"),
             reference_period=arguments.get("reference_period"),
+            temporal_bucket=arguments.get("temporal_bucket"),
             forecast_horizon=arguments.get("forecast_horizon"),
             definition=arguments.get("definition"),
             extraction_method=arguments.get("extraction_method"),

@@ -29,7 +29,7 @@ from agent_reach.channels.web import WebChannel
 
 from .ace import ACEStore
 from .ace_mcp import ace_tool_specs, handle_ace_tool
-from .browser_use import inspect_youtube_page, probe_browser_use
+from .browser_use import inspect_youtube_page, probe_browser_use, read_public_page
 from .orchestration import OrchestrationStore, classify_tool_effect
 from .orchestration_mcp import handle_orchestration_tool, orchestration_tool_specs
 from .research import ResearchStore
@@ -38,6 +38,7 @@ from .retrieval import retrieve_with_fallback
 from .runtime import RuntimeStore
 from .runtime_mcp import handle_runtime_tool, runtime_tool_specs
 from .subagent import SubagentModelClient, SubagentModelError
+from .temporal_mcp import handle_temporal_tool, temporal_tool_specs
 from .video import ingest_media
 
 _MAX_REMOTE_RESPONSE_BYTES = 5 * 1024 * 1024
@@ -489,6 +490,33 @@ class AhmedToolboxGateway:
                 },
             },
             {
+                "name": "reach_browser_read_url",
+                "description": (
+                    "Read rendered text from a public HTTP(S) page through Browser Use. "
+                    "Read-only and bounded; local/private network targets are rejected."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["url"],
+                    "properties": {
+                        "url": {"type": "string", "minLength": 1, "maxLength": 2000},
+                        "max_chars": {
+                            "type": "integer",
+                            "minimum": 1000,
+                            "maximum": 100000,
+                            "default": 50000,
+                        },
+                        "timeout_seconds": {
+                            "type": "integer",
+                            "minimum": 5,
+                            "maximum": 120,
+                            "default": 45,
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "reach_youtube_browser_inspect",
                 "description": (
                     "Read rendered YouTube UI through Browser Use when yt-dlp is "
@@ -527,7 +555,8 @@ class AhmedToolboxGateway:
                 "description": (
                     "Retrieve a public page through the controlled fallback state machine: "
                     "Jina -> Scrapling fetch -> Scrapling stealthy -> optional configured "
-                    "browser backend. Returns content plus every attempt/reason."
+                    "browser backend -> targeted web discovery. Alternative discovery is "
+                    "kept distinct from the blocked original source to preserve provenance."
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -554,6 +583,14 @@ class AhmedToolboxGateway:
                         "require_all_terms": {
                             "type": "boolean",
                             "default": True,
+                        },
+                        "discovery_query": {
+                            "type": "string",
+                            "maxLength": 1000,
+                            "description": (
+                                "Optional targeted-search query used only after the "
+                                "original URL retrieval path is exhausted."
+                            ),
                         },
                     },
                     "additionalProperties": False,
@@ -586,6 +623,7 @@ class AhmedToolboxGateway:
         tools = list(self._local_tool_specs())
         if self.research_enabled:
             tools.extend(research_tool_specs())
+            tools.extend(temporal_tool_specs())
         if self.orchestration_enabled:
             tools.extend(orchestration_tool_specs())
         if self.runtime_enabled:
@@ -853,6 +891,21 @@ class AhmedToolboxGateway:
                 return self._text_result(
                     json.dumps(research_result, ensure_ascii=False, default=str)
                 )
+            try:
+                temporal_result = handle_temporal_tool(
+                    self.research_store,
+                    name,
+                    arguments,
+                )
+            except (TypeError, ValueError) as exc:
+                return self._text_result(
+                    f"Research temporal error: {exc}",
+                    is_error=True,
+                )
+            if temporal_result is not None:
+                return self._text_result(
+                    json.dumps(temporal_result, ensure_ascii=False, default=str)
+                )
 
         if name == "reach_doctor":
             data = self.agent_reach.doctor()
@@ -953,6 +1006,30 @@ class AhmedToolboxGateway:
             )
             return self._text_result(diagnostic, is_error=True)
 
+        if name == "reach_browser_read_url":
+            url = str(arguments.get("url") or "").strip()
+            if not url:
+                return self._text_result("url is required", is_error=True)
+            try:
+                evidence = read_public_page(
+                    url,
+                    max_chars=int(arguments.get("max_chars") or 50000),
+                    timeout_seconds=int(arguments.get("timeout_seconds") or 45),
+                )
+            except (TypeError, ValueError) as exc:
+                return self._text_result(
+                    f"Browser read input error: {exc}",
+                    is_error=True,
+                )
+            except Exception as exc:  # noqa: BLE001 - optional browser boundary
+                return self._text_result(
+                    f"Browser read failed: {exc}",
+                    is_error=True,
+                )
+            return self._text_result(
+                json.dumps(evidence, ensure_ascii=False, default=str)
+            )
+
         if name == "reach_youtube_browser_inspect":
             url = str(arguments.get("url") or "").strip()
             if not url:
@@ -1008,7 +1085,7 @@ class AhmedToolboxGateway:
                 )
             browser_tool = os.environ.get(
                 "AHMED_TOOLBOX_BROWSER_FALLBACK_TOOL",
-                "",
+                "reach_browser_read_url",
             ).strip()
             if browser_tool == "reach_retrieve_url":
                 browser_tool = ""
@@ -1026,6 +1103,10 @@ class AhmedToolboxGateway:
                         arguments.get("require_all_terms", True)
                     ),
                     browser_tool=browser_tool or None,
+                    discovery_tool="reach_web_search",
+                    discovery_query=(
+                        str(arguments.get("discovery_query") or "").strip() or None
+                    ),
                 )
             except (TypeError, ValueError) as exc:
                 return self._text_result(

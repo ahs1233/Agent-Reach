@@ -20,14 +20,14 @@ GENESIS_HASH = "0" * 64
 DEFAULT_SPECIALISTS = {
     "orchestrator": ["reach_doctor", "research_export_ledger", "research_audit_run"],
     "discoverer": ["reach_web_search"],
-    "retriever": ["reach_read_url", "reach_retrieve_url", "reach_media_ingest", "scrapling__*"],
+    "retriever": ["reach_read_url", "reach_retrieve_url", "reach_browser_read_url", "reach_media_ingest", "scrapling__*"],
     "evidence_analyst": ["research_*"],
-    "adversarial_reviewer": ["reach_web_search", "reach_read_url", "reach_retrieve_url", "scrapling__*", "research_*"],
+    "adversarial_reviewer": ["reach_web_search", "reach_read_url", "reach_retrieve_url", "reach_browser_read_url", "scrapling__*", "research_*"],
     "verifier": ["research_export_ledger", "research_audit_run", "research_get_*", "research_evaluate_*"],
     "synthesizer": ["research_create_output", "research_get_output", "research_audit_output"],
     "growth_experimenter": [
         "ace_*", "reach_web_search", "reach_read_url", "reach_retrieve_url",
-        "reach_youtube_browser_inspect", "research_*",
+        "reach_browser_read_url", "reach_youtube_browser_inspect", "research_*",
     ],
 }
 
@@ -39,6 +39,7 @@ NETWORK_TOOLS = {
     "reach_web_search",
     "reach_read_url",
     "reach_retrieve_url",
+    "reach_browser_read_url",
     "reach_media_ingest",
     "reach_youtube_browser_inspect",
 } | READ_ONLY_REMOTE_TOOLS
@@ -74,7 +75,7 @@ def _rank(effect: str) -> int:
 
 
 def classify_tool_effect(name: str) -> str | None:
-    if name in {"reach_doctor", "reach_web_search", "reach_read_url", "reach_retrieve_url", "reach_youtube_browser_inspect"}:
+    if name in {"reach_doctor", "reach_web_search", "reach_read_url", "reach_retrieve_url", "reach_browser_read_url", "reach_youtube_browser_inspect"}:
         return "SE0"
     if name == "reach_media_ingest" or name.startswith("research_"):
         return "SE1"

@@ -200,3 +200,104 @@ def test_antibot_error_is_recorded_as_blocked() -> None:
     assert result["attempts"][0]["status"] == "BLOCKED"
     assert result["attempts"][0]["reason_code"] == "ANTI_BOT_CHALLENGE"
     assert result["retrieval_history"][0]["status"] == "BLOCKED"
+
+
+def test_f_403_falls_back_without_aborting_research() -> None:
+    calls: list[str] = []
+
+    def caller(name: str, arguments: dict) -> dict:
+        del arguments
+        calls.append(name)
+        if name == "reach_read_url":
+            return _error("HTTP 403 Forbidden")
+        if name == "scrapling__fetch":
+            return _ok("usable official representation " + "x" * 400)
+        raise AssertionError(f"unexpected tool: {name}")
+
+    result = retrieve_with_fallback(
+        "https://example.com/official",
+        call_tool=caller,
+        min_chars=200,
+    )
+
+    assert result["status"] == "SUCCESS"
+    assert result["final_tool"] == "scrapling__fetch"
+    assert result["attempts"][0]["status"] == "BLOCKED"
+    assert result["attempts"][0]["reason_code"] == "HTTP_403_FORBIDDEN"
+    assert calls == ["reach_read_url", "scrapling__fetch"]
+
+
+def test_targeted_search_discovers_alternative_without_impersonating_original_source() -> None:
+    calls: list[str] = []
+
+    def caller(name: str, arguments: dict) -> dict:
+        calls.append(name)
+        if name in {
+            "reach_read_url",
+            "scrapling__fetch",
+            "scrapling__stealthy_fetch",
+        }:
+            return _error("backend unavailable")
+        if name == "reach_web_search":
+            assert arguments["query"] == "official event current state"
+            return _ok("https://credible.example/current-state " + "e" * 300)
+        raise AssertionError(f"unexpected tool: {name}")
+
+    result = retrieve_with_fallback(
+        "https://blocked.example/live",
+        call_tool=caller,
+        discovery_tool="reach_web_search",
+        discovery_query="official event current state",
+    )
+
+    assert result["status"] == "ALTERNATIVE_DISCOVERED"
+    assert result["content"] == ""
+    assert result["final_tool"] == "reach_web_search"
+    assert result["reason_code"] == "ORIGINAL_SOURCE_UNAVAILABLE_ALTERNATIVES_DISCOVERED"
+    assert "credible.example" in result["alternative_discovery"]
+    assert result["attempts"][-1]["status"] == "DISCOVERED"
+    assert len(calls) == 4
+
+
+def test_rate_limit_is_classified_and_later_retrieval_stage_can_succeed() -> None:
+    calls: list[str] = []
+
+    def caller(name: str, arguments: dict) -> dict:
+        del arguments
+        calls.append(name)
+        if name == "reach_read_url":
+            return _error("429 Too Many Requests: rate limit exceeded")
+        if name == "scrapling__fetch":
+            return _ok("fallback route " + "r" * 400)
+        raise AssertionError(f"unexpected tool: {name}")
+
+    result = retrieve_with_fallback(
+        "https://example.com/rate-limited",
+        call_tool=caller,
+    )
+
+    assert result["status"] == "SUCCESS"
+    assert result["attempts"][0]["reason_code"] == "RATE_LIMITED"
+    assert result["final_tool"] == "scrapling__fetch"
+    assert len(calls) == 2
+
+
+def test_retrieval_attempt_count_is_bounded_with_browser_and_discovery() -> None:
+    calls: list[str] = []
+
+    def caller(name: str, arguments: dict) -> dict:
+        del arguments
+        calls.append(name)
+        return _error("unavailable")
+
+    result = retrieve_with_fallback(
+        "https://example.com/bounded",
+        call_tool=caller,
+        browser_tool="browser__read",
+        discovery_tool="reach_web_search",
+        discovery_query="bounded fallback",
+    )
+
+    assert result["status"] == "SOURCE_UNAVAILABLE"
+    assert len(result["attempts"]) == 5
+    assert len(calls) == 5
