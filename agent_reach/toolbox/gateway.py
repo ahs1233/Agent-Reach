@@ -27,6 +27,8 @@ import requests
 from agent_reach import AgentReach
 from agent_reach.channels.web import WebChannel
 
+from .ace import ACEStore
+from .ace_mcp import ace_tool_specs, handle_ace_tool
 from .browser_use import inspect_youtube_page, probe_browser_use
 from .orchestration import OrchestrationStore, classify_tool_effect
 from .orchestration_mcp import handle_orchestration_tool, orchestration_tool_specs
@@ -329,6 +331,8 @@ class AhmedToolboxGateway:
         orchestration_enabled: bool | None = None,
         runtime_store: RuntimeStore | None = None,
         runtime_enabled: bool | None = None,
+        ace_store: ACEStore | None = None,
+        ace_enabled: bool | None = None,
     ):
         self.agent_reach = agent_reach or AgentReach()
         self.remotes = remotes or {}
@@ -365,6 +369,20 @@ class AhmedToolboxGateway:
         )
         self.subagent_client = (
             SubagentModelClient.from_environment() if self.runtime_enabled else None
+        )
+        requested_ace = (
+            _env_flag("AHMED_ACE_ENABLED", self.runtime_enabled)
+            if ace_enabled is None
+            else bool(ace_enabled)
+        )
+        self.ace_enabled = requested_ace
+        if self.ace_enabled and self.research_store is None:
+            self.research_enabled = True
+            self.research_store = research_store or ResearchStore.from_environment()
+        self.ace_store = (
+            ace_store or ACEStore.from_environment()
+            if self.ace_enabled
+            else None
         )
 
     @classmethod
@@ -572,6 +590,8 @@ class AhmedToolboxGateway:
             tools.extend(orchestration_tool_specs())
         if self.runtime_enabled:
             tools.extend(runtime_tool_specs())
+        if self.ace_enabled:
+            tools.extend(ace_tool_specs())
         used_names = {tool["name"] for tool in tools}
 
         for prefix, remote in sorted(self.remotes.items()):
@@ -795,6 +815,27 @@ class AhmedToolboxGateway:
         self, name: str, arguments: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         arguments = arguments or {}
+
+        if self.ace_enabled and self.ace_store is not None:
+            try:
+                ace_result = handle_ace_tool(
+                    self.ace_store,
+                    name,
+                    arguments,
+                    research_store=self.research_store,
+                    execute_tool=lambda tool_name, tool_arguments: self._call_tool_unorchestrated(
+                        tool_name, tool_arguments
+                    ),
+                )
+            except (TypeError, ValueError) as exc:
+                return self._text_result(
+                    f"ACE error: {exc}",
+                    is_error=True,
+                )
+            if ace_result is not None:
+                return self._text_result(
+                    json.dumps(ace_result, ensure_ascii=False, default=str)
+                )
 
         if self.research_enabled and self.research_store is not None:
             try:

@@ -11,7 +11,7 @@ from typing import Any
 from .gateway import AhmedToolboxGateway, RemoteMCPError
 
 _MAX_REQUEST_BYTES = 1024 * 1024
-_SERVER_VERSION = "0.1.1"
+_SERVER_VERSION = "0.2.0"
 
 
 def _initialize_result(params: dict[str, Any]) -> dict[str, Any]:

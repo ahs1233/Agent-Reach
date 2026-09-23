@@ -25,6 +25,10 @@ DEFAULT_SPECIALISTS = {
     "adversarial_reviewer": ["reach_web_search", "reach_read_url", "reach_retrieve_url", "scrapling__*", "research_*"],
     "verifier": ["research_export_ledger", "research_audit_run", "research_get_*", "research_evaluate_*"],
     "synthesizer": ["research_create_output", "research_get_output", "research_audit_output"],
+    "growth_experimenter": [
+        "ace_*", "reach_web_search", "reach_read_url", "reach_retrieve_url",
+        "reach_youtube_browser_inspect", "research_*",
+    ],
 }
 
 READ_ONLY_REMOTE_TOOLS = {
@@ -73,6 +77,10 @@ def classify_tool_effect(name: str) -> str | None:
     if name in {"reach_doctor", "reach_web_search", "reach_read_url", "reach_retrieve_url", "reach_youtube_browser_inspect"}:
         return "SE0"
     if name == "reach_media_ingest" or name.startswith("research_"):
+        return "SE1"
+    if name in {"ace_status", "ace_report", "ace_next"}:
+        return "SE0"
+    if name.startswith("ace_"):
         return "SE1"
     if name in READ_ONLY_REMOTE_TOOLS:
         return "SE0"
