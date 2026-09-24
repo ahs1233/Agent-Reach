@@ -85,6 +85,7 @@ def test_openai_compatible_subagent_executes_tool_then_finishes():
             seen.append((name, arguments, role))
             or {"isError": False, "content": [{"type": "text", "text": "ok"}]}
         ),
+        timeout_seconds=7,
     )
 
     assert result["status"] == "ok"
@@ -92,6 +93,7 @@ def test_openai_compatible_subagent_executes_tool_then_finishes():
     assert result["summary"] == "Toolbox health is OK."
     assert seen == [("reach_doctor", {}, "orchestrator")]
     assert len(session.calls) == 2
+    assert all(0 < call[1]["timeout"] <= 7 for call in session.calls)
     second_messages = session.calls[1][1]["json"]["messages"]
     assert any(message.get("role") == "tool" for message in second_messages)
     assert "secret-value" not in json.dumps(session.calls[0][1]["json"])
@@ -111,13 +113,24 @@ class _FakeModelClient:
             "max_tool_calls": 4,
         }
 
-    def run(self, *, goal, role, tools, execute_tool, context="", max_turns=None):
+    def run(
+        self,
+        *,
+        goal,
+        role,
+        tools,
+        execute_tool,
+        context="",
+        max_turns=None,
+        timeout_seconds=None,
+    ):
         self.calls.append({
             "goal": goal,
             "role": role,
             "tool_names": [tool["name"] for tool in tools],
             "context": context,
             "max_turns": max_turns,
+            "timeout_seconds": timeout_seconds,
         })
         result = execute_tool("reach_doctor", {}, role)
         assert result["isError"] is False
@@ -157,6 +170,7 @@ def test_gateway_model_child_agent_is_isolated_and_budgeted(tmp_path):
             "goal": "Check toolbox health using the allowed tool.",
             "role": "orchestrator",
             "tool_allowlist": ["reach_doctor"],
+            "timeout_seconds": 7,
             "budget": {"tool_calls": 1, "network_calls": 0},
         }],
     }))
@@ -173,7 +187,55 @@ def test_gateway_model_child_agent_is_isolated_and_budgeted(tmp_path):
     assert child["usage"]["network_calls"] == 0
     assert child["journal"]["passed"] is True
     assert fake_model.calls[0]["tool_names"] == ["reach_doctor"]
+    assert fake_model.calls[0]["timeout_seconds"] == 7
 
     status = _payload(gateway.call_tool("runtime_status", {}))
     assert status["features"]["model_subagents"] is True
     assert status["model_subagent"]["model"] == "fake-model"
+
+
+
+def test_model_child_timeout_is_clamped_inside_parent_deadline(tmp_path):
+    gateway = AhmedToolboxGateway(
+        agent_reach=_FakeReach(),
+        research_store=ResearchStore(str(tmp_path / "research-timeout.db")),
+        research_enabled=True,
+        orchestration_store=OrchestrationStore(str(tmp_path / "orch-timeout.db")),
+        orchestration_enabled=True,
+        runtime_store=RuntimeStore(str(tmp_path / "runtime-timeout.db")),
+        runtime_enabled=True,
+    )
+    fake_model = _FakeModelClient()
+    gateway.subagent_client = fake_model
+
+    parent = _payload(
+        gateway.call_tool(
+            "orchestration_start",
+            {
+                "objective": "model child timeout containment",
+                "mode": "general",
+                "budget": {"tool_calls": 1, "network_calls": 0},
+            },
+        )
+    )
+    delegated = _payload(
+        gateway.call_tool(
+            "runtime_delegate",
+            {
+                "orchestration_id": parent["orchestration_id"],
+                "timeout_seconds": 10,
+                "tasks": [
+                    {
+                        "id": "child",
+                        "goal": "Check health.",
+                        "role": "orchestrator",
+                        "tool_allowlist": ["reach_doctor"],
+                        "timeout_seconds": 300,
+                        "budget": {"tool_calls": 1, "network_calls": 0},
+                    }
+                ],
+            },
+        )
+    )
+    assert delegated["status"] == "ok"
+    assert fake_model.calls[0]["timeout_seconds"] == 9

@@ -909,6 +909,11 @@ class AhmedToolboxGateway:
                 max_turns=(
                     int(task["max_turns"]) if task.get("max_turns") is not None else None
                 ),
+                timeout_seconds=(
+                    float(task["timeout_seconds"])
+                    if task.get("timeout_seconds") is not None
+                    else min(float(self.subagent_client.config.timeout_seconds), 120.0)
+                ),
             )
         except (SubagentModelError, TypeError, ValueError) as exc:
             return {

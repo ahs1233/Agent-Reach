@@ -115,7 +115,12 @@ class SubagentModelClient:
     def status(self) -> dict[str, Any]:
         return self.config.public_status()
 
-    def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _post(
+        self,
+        payload: dict[str, Any],
+        *,
+        deadline: float | None = None,
+    ) -> dict[str, Any]:
         if not self.config.available:
             raise SubagentModelError(
                 "model-backed subagents are not configured; set "
@@ -124,6 +129,12 @@ class SubagentModelClient:
 
         last_error = "unknown model provider error"
         for attempt in range(3):
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                raise SubagentModelError("model provider deadline exceeded")
+            request_timeout = max(5.0, min(self.config.timeout_seconds, 180.0))
+            if remaining is not None:
+                request_timeout = max(0.1, min(request_timeout, remaining))
             try:
                 response = self._session.post(
                     self.config.endpoint,
@@ -133,13 +144,22 @@ class SubagentModelClient:
                         "Accept": "application/json",
                     },
                     json=payload,
-                    timeout=max(5.0, min(self.config.timeout_seconds, 180.0)),
+                    timeout=request_timeout,
                     stream=True,
                 )
             except requests.RequestException as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
                 if attempt < 2:
-                    time.sleep(0.25 * (2**attempt))
+                    backoff = 0.25 * (2**attempt)
+                    if deadline is not None:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise SubagentModelError(
+                                "model provider deadline exceeded"
+                            ) from exc
+                        backoff = min(backoff, remaining)
+                    if backoff > 0:
+                        time.sleep(backoff)
                     continue
                 raise SubagentModelError(last_error) from exc
 
@@ -159,7 +179,14 @@ class SubagentModelClient:
             body = b"".join(chunks).decode("utf-8", errors="replace")
             if response.status_code in {429, 500, 502, 503, 504} and attempt < 2:
                 last_error = f"provider HTTP {response.status_code}"
-                time.sleep(0.25 * (2**attempt))
+                backoff = 0.25 * (2**attempt)
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise SubagentModelError("model provider deadline exceeded")
+                    backoff = min(backoff, remaining)
+                if backoff > 0:
+                    time.sleep(backoff)
                 continue
             if response.status_code >= 400:
                 detail = body[:800].replace(self.config.api_key, "[REDACTED]")
@@ -185,6 +212,7 @@ class SubagentModelClient:
         execute_tool: Callable[[str, dict[str, Any], str], dict[str, Any]],
         context: str = "",
         max_turns: int | None = None,
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         goal = goal.strip()
         if not goal:
@@ -199,6 +227,10 @@ class SubagentModelClient:
             ),
         )
         tool_call_limit = max(1, min(int(self.config.max_tool_calls), 100))
+        deadline = None
+        if timeout_seconds is not None:
+            bounded_timeout = max(1.0, min(float(timeout_seconds), 900.0))
+            deadline = time.monotonic() + bounded_timeout
 
         exposed: list[dict[str, Any]] = []
         allowed_names: set[str] = set()
@@ -246,7 +278,7 @@ class SubagentModelClient:
                 request["tools"] = exposed
                 request["tool_choice"] = "auto"
 
-            response = self._post(request)
+            response = self._post(request, deadline=deadline)
             choices = response.get("choices") or []
             if not choices or not isinstance(choices[0], dict):
                 raise SubagentModelError("model response contained no choices")
@@ -284,6 +316,8 @@ class SubagentModelClient:
             messages.append(assistant_message)
 
             for call in tool_calls:
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise SubagentModelError("model subagent deadline exceeded")
                 if total_tool_calls >= tool_call_limit:
                     return {
                         "schema": "ahmed-runtime-model-subagent/v1",

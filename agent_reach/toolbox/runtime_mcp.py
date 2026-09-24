@@ -542,11 +542,25 @@ def handle_runtime_tool(
                 )
             return outcome
 
+        delegation_timeout = max(
+            1.0,
+            min(float(arguments.get("timeout_seconds") or 300), 1800.0),
+        )
+        child_deadline_cap = max(1.0, delegation_timeout - 1.0)
+        for task in tasks:
+            if not task.get("goal"):
+                continue
+            requested_timeout = float(task.get("timeout_seconds") or 60.0)
+            task["timeout_seconds"] = max(
+                1.0,
+                min(requested_timeout, child_deadline_cap, 900.0),
+            )
+
         result = execute_delegation(
             tasks,
             execute_task,
             max_parallel=int(arguments.get("max_parallel") or 3),
-            timeout_seconds=float(arguments.get("timeout_seconds") or 300),
+            timeout_seconds=delegation_timeout,
         )
         result["session_id"] = session_id
         if parent_id:

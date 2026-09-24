@@ -193,7 +193,7 @@ elif all(provider_values):
             {
                 "orchestration_id": parent["orchestration_id"],
                 "max_parallel": 1,
-                "timeout_seconds": 45,
+                "timeout_seconds": 75,
                 "tasks": [
                     {
                         "id": "live-model-child",
@@ -205,6 +205,7 @@ elif all(provider_values):
                         "role": "orchestrator",
                         "tool_allowlist": ["reach_doctor"],
                         "max_turns": 4,
+                        "timeout_seconds": 60,
                         "budget": {"tool_calls": 1, "network_calls": 0},
                     }
                 ],
