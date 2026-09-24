@@ -31,6 +31,13 @@ _CHATGPT_CALLBACK_CLIENT_RE = re.compile(
 _CHATGPT_CALLBACK_REDIRECT_RE = re.compile(
     r"^https://chatgpt\.com/connector/oauth/([A-Za-z0-9_-]{8,200})$"
 )
+_CODEX_STABLE_CLIENT_ID = "https://chatgpt.com/oauth/codex/client.json"
+_CODEX_CALLBACK_CLIENT_RE = re.compile(
+    r"^https://chatgpt\.com/oauth/codex/([A-Za-z0-9_-]{8,200})/client\.json$"
+)
+_CODEX_CALLBACK_PATH_RE = re.compile(
+    r"^/callback(?:/([A-Za-z0-9_-]{8,200}))?$"
+)
 _SCOPE_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _ALLOWED_SCOPES = ("toolbox", "offline_access")
 
@@ -73,6 +80,26 @@ def _scope_set(raw: str) -> tuple[str, ...]:
 def _is_loopback_url(value: str) -> bool:
     parsed = urlsplit(value)
     return parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+
+
+def _codex_loopback_callback(value: str) -> tuple[bool, str]:
+    """Validate Codex native-app loopback redirects and return their callback id."""
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "localhost"}
+        or parsed.port is None
+        or parsed.port <= 0
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        return False, ""
+    match = _CODEX_CALLBACK_PATH_RE.fullmatch(parsed.path)
+    if not match:
+        return False, ""
+    return True, match.group(1) or ""
 
 
 @dataclass(frozen=True)
@@ -276,9 +303,27 @@ class AhmedOAuthProvider:
     def _is_chatgpt_redirect(value: str) -> bool:
         if value == _CHATGPT_STABLE_REDIRECT_URI:
             return True
-        return bool(_CHATGPT_CALLBACK_REDIRECT_RE.fullmatch(value))
+        if _CHATGPT_CALLBACK_REDIRECT_RE.fullmatch(value):
+            return True
+        valid, _ = _codex_loopback_callback(value)
+        return valid
 
     def validate_client_redirect(self, client_id: str, redirect_uri: str) -> None:
+        # The ChatGPT Windows desktop app uses the Codex MCP client. With RFC 9207
+        # issuer identification enabled it identifies as the stable Codex CIMD client
+        # and redirects to an ephemeral loopback callback. Older/issuerless clients
+        # use a callback-id-specific CIMD identity and callback path.
+        valid_loopback, callback_id = _codex_loopback_callback(redirect_uri)
+        if client_id == _CODEX_STABLE_CLIENT_ID:
+            if valid_loopback and not callback_id:
+                return
+            raise OAuthProtocolError("invalid_request", "redirect_uri is not registered")
+        codex_match = _CODEX_CALLBACK_CLIENT_RE.fullmatch(client_id)
+        if codex_match:
+            if valid_loopback and callback_id == codex_match.group(1):
+                return
+            raise OAuthProtocolError("invalid_request", "redirect_uri is not registered")
+
         redirects = self._client_redirects(client_id)
         if redirect_uri not in redirects or not self._is_chatgpt_redirect(redirect_uri):
             raise OAuthProtocolError("invalid_request", "redirect_uri is not registered")
