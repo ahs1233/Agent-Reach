@@ -115,7 +115,6 @@ jobs:
       - name: Stress harness lint
         run: |
           ruff check scripts/toolbox_stress.py
-          ruff format --diff scripts/toolbox_stress.py
           ruff format --check scripts/toolbox_stress.py
 
       - name: Core stress suite

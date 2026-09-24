@@ -251,9 +251,7 @@ def main() -> None:
 
     peak_rss_raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     peak_rss_mb = (
-        peak_rss_raw / (1024 * 1024)
-        if os.uname().sysname == "Darwin"
-        else peak_rss_raw / 1024
+        peak_rss_raw / (1024 * 1024) if os.uname().sysname == "Darwin" else peak_rss_raw / 1024
     )
     report = {
         "schema": "ahmed-toolbox-stress/v1",
