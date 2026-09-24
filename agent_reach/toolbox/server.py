@@ -470,7 +470,12 @@ class ToolboxRequestHandler(BaseHTTPRequestHandler):
                 return
             if method == "tools/list":
                 tools = []
-                for spec in self.gateway.list_tools():
+                list_public = getattr(
+                    self.gateway,
+                    "list_public_tools",
+                    self.gateway.list_tools,
+                )
+                for spec in list_public():
                     item = dict(spec)
                     if provider is not None:
                         item.setdefault(
@@ -496,11 +501,16 @@ class ToolboxRequestHandler(BaseHTTPRequestHandler):
                         ),
                     )
                     return
+                call_public = getattr(
+                    self.gateway,
+                    "call_public_tool",
+                    self.gateway.call_tool,
+                )
                 self._send_json(
                     200,
                     _rpc_result(
                         req_id,
-                        self.gateway.call_tool(
+                        call_public(
                             name,
                             arguments,
                             request_id=req_id,
