@@ -2,27 +2,20 @@
 
 from __future__ import annotations
 
-import hmac
 import json
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from .auth import AuthConfig, AuthMiddleware
 from .gateway import AhmedToolboxGateway, RemoteMCPError
 
 _MAX_REQUEST_BYTES = 1024 * 1024
 _SERVER_VERSION = "0.1.2"
 _PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18")
-_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
-
-
 def _validate_auth_configuration(host: str, token: str) -> None:
-    """Fail closed when the MCP server is exposed beyond loopback."""
-    if token.strip() or host.strip().lower() in _LOOPBACK_HOSTS:
-        return
-    raise RuntimeError(
-        "AHMED_TOOLBOX_TOKEN is required when AHMED_TOOLBOX_HOST is non-loopback"
-    )
+    """Compatibility wrapper for the production fail-closed startup gate."""
+    AuthConfig.from_environment(legacy_token=token).validate_for_host(host)
 
 
 def _initialize_result(params: dict[str, Any]) -> dict[str, Any]:
@@ -50,7 +43,7 @@ def _rpc_error(req_id: Any, code: int, message: str) -> dict[str, Any]:
 
 class ToolboxRequestHandler(BaseHTTPRequestHandler):
     gateway: AhmedToolboxGateway
-    auth_token: str = ""
+    auth_middleware: AuthMiddleware
 
     server_version = f"AhmedToolbox/{_SERVER_VERSION}"
 
