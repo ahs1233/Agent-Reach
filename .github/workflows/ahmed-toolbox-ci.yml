@@ -60,6 +60,7 @@ jobs:
         run: |
           ruff format --check agent_reach/toolbox/observability.py agent_reach/toolbox/retrieval.py
           ruff format --check scripts/production_acceptance.py
+          ruff format --diff scripts/auth_lifecycle_acceptance.py agent_reach/toolbox/auth.py
           ruff format --check scripts/auth_lifecycle_acceptance.py agent_reach/toolbox/auth.py agent_reach/toolbox/auth_client.py tests/test_toolbox_auth_lifecycle.py
           ruff format --check tests/golden tests/test_toolbox_observability.py tests/test_failure_matrix.py
 
