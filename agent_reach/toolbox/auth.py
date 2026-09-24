@@ -60,24 +60,19 @@ class AuthConfig:
 
     @classmethod
     def from_environment(cls, *, legacy_token: str = "") -> "AuthConfig":
-        resolved_legacy = legacy_token.strip() or os.environ.get(
-            "AHMED_TOOLBOX_TOKEN", ""
-        ).strip()
+        resolved_legacy = legacy_token.strip() or os.environ.get("AHMED_TOOLBOX_TOKEN", "").strip()
         resolved_refresh = (
-            os.environ.get("AHMED_TOOLBOX_REFRESH_TOKEN", "").strip()
-            or resolved_legacy
+            os.environ.get("AHMED_TOOLBOX_REFRESH_TOKEN", "").strip() or resolved_legacy
         )
         # Compatibility fallback keeps existing deployments bootable while the
         # explicit Railway signing secret is introduced. Production config uses
         # AHMED_TOOLBOX_AUTH_SECRET.
         resolved_signing = (
-            os.environ.get("AHMED_TOOLBOX_AUTH_SECRET", "").strip()
-            or resolved_refresh
+            os.environ.get("AHMED_TOOLBOX_AUTH_SECRET", "").strip() or resolved_refresh
         )
-        allow_legacy = (
-            os.environ.get("AHMED_TOOLBOX_ALLOW_LEGACY_TOKEN", "1").strip().lower()
-            not in {"0", "false", "no", "off"}
-        )
+        allow_legacy = os.environ.get(
+            "AHMED_TOOLBOX_ALLOW_LEGACY_TOKEN", "1"
+        ).strip().lower() not in {"0", "false", "no", "off"}
         return cls(
             legacy_token=resolved_legacy,
             refresh_token=resolved_refresh,
@@ -94,9 +89,7 @@ class AuthConfig:
                 "Ahmed Toolbox requires a persistent auth credential on a non-loopback host"
             )
         if self.refresh_token and not self.signing_secret:
-            raise RuntimeError(
-                "AHMED_TOOLBOX_AUTH_SECRET is required when refresh auth is enabled"
-            )
+            raise RuntimeError("AHMED_TOOLBOX_AUTH_SECRET is required when refresh auth is enabled")
 
 
 @dataclass(frozen=True)

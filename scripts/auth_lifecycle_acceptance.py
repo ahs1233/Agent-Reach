@@ -117,9 +117,7 @@ def main() -> None:
         if statuses != ["ok"] * call_count:
             raise LifecycleFailure("one or more runtime_status calls were unhealthy")
         if client.refresh_count < 2:
-            raise LifecycleFailure(
-                "short-lived access token did not refresh during lifecycle test"
-            )
+            raise LifecycleFailure("short-lived access token did not refresh during lifecycle test")
         report = {
             "schema": "ahmed-toolbox-auth-lifecycle/v1",
             "phase": "pre",
