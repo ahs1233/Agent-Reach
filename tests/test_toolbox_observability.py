@@ -22,8 +22,7 @@ def _payload(result):
 def test_execution_log_schema_and_indexes():
     store = ExecutionLogStore(":memory:")
     columns = {
-        row["name"]
-        for row in store._conn.execute("PRAGMA table_info(execution_log)").fetchall()
+        row["name"] for row in store._conn.execute("PRAGMA table_info(execution_log)").fetchall()
     }
     assert {
         "run_id",
@@ -44,8 +43,7 @@ def test_execution_log_schema_and_indexes():
         "session_id",
     } <= columns
     indexes = {
-        row["name"]
-        for row in store._conn.execute("PRAGMA index_list(execution_log)").fetchall()
+        row["name"] for row in store._conn.execute("PRAGMA index_list(execution_log)").fetchall()
     }
     assert {
         "idx_execution_log_started_at",
@@ -100,19 +98,23 @@ def test_gateway_logs_success_failure_and_stats_without_inputs():
 def test_fallback_and_tokens_are_logged_only_when_observed():
     store = ExecutionLogStore(":memory:")
     result = {
-        "content": [{
-            "type": "text",
-            "text": json.dumps({
-                "attempts": [{"status": "FAILED"}, {"status": "SUCCESS"}],
-                "escalation_count": 1,
-                "usage": {
-                    "prompt_tokens": 12,
-                    "completion_tokens": 7,
-                    "total_tokens": 19,
-                },
-                "workflow_hash": "wf-observed",
-            }),
-        }],
+        "content": [
+            {
+                "type": "text",
+                "text": json.dumps(
+                    {
+                        "attempts": [{"status": "FAILED"}, {"status": "SUCCESS"}],
+                        "escalation_count": 1,
+                        "usage": {
+                            "prompt_tokens": 12,
+                            "completion_tokens": 7,
+                            "total_tokens": 19,
+                        },
+                        "workflow_hash": "wf-observed",
+                    }
+                ),
+            }
+        ],
         "isError": False,
     }
     meta = store.result_metadata(result)
@@ -152,12 +154,14 @@ def test_server_threads_jsonrpc_request_id_into_execution_log():
     thread.start()
     try:
         port = server.server_address[1]
-        body = json.dumps({
-            "jsonrpc": "2.0",
-            "id": 4242,
-            "method": "tools/call",
-            "params": {"name": "reach_doctor", "arguments": {}},
-        }).encode()
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 4242,
+                "method": "tools/call",
+                "params": {"name": "reach_doctor", "arguments": {}},
+            }
+        ).encode()
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         conn.request(
             "POST",
