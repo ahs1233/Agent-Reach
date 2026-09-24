@@ -387,3 +387,70 @@ def test_retrieval_fallback_tool_escalates_through_gateway(monkeypatch) -> None:
     assert payload["attempts"][0]["tool"] == "reach_read_url"
     assert payload["attempts"][0]["status"] == "FAILED"
     assert payload["attempts"][1]["status"] == "SUCCESS"
+
+
+def test_compact_public_surface_hides_full_registry_without_removing_it():
+    gateway = AhmedToolboxGateway(
+        {"scrapling": _FakeRemote()},
+        agent_reach=_FakeReach(),
+        compact_surface_enabled=True,
+    )
+
+    full_names = {tool["name"] for tool in gateway.list_tools()}
+    public_names = {tool["name"] for tool in gateway.list_public_tools()}
+
+    assert "reach_web_search" in full_names
+    assert "scrapling__fetch" in full_names
+    assert public_names == {
+        "reach_doctor",
+        "toolbox_catalog",
+        "toolbox_invoke",
+    }
+
+
+def test_compact_catalog_discovers_schema_on_demand():
+    gateway = AhmedToolboxGateway(
+        agent_reach=_FakeReach(),
+        compact_surface_enabled=True,
+    )
+
+    result = gateway.call_public_tool(
+        "toolbox_catalog",
+        {
+            "query": "reach_web_search",
+            "category": "reach",
+            "include_schema": True,
+        },
+    )
+
+    assert result["isError"] is False
+    payload = json.loads(result["content"][0]["text"])
+    assert [item["name"] for item in payload["matches"]] == ["reach_web_search"]
+    assert payload["matches"][0]["inputSchema"]["required"] == ["query"]
+
+
+def test_compact_invoke_routes_to_internal_tool():
+    gateway = AhmedToolboxGateway(
+        agent_reach=_FakeReach(),
+        compact_surface_enabled=True,
+    )
+
+    result = gateway.call_public_tool(
+        "toolbox_invoke",
+        {"tool_name": "reach_doctor", "arguments": {}},
+    )
+
+    assert result["isError"] is False
+    payload = json.loads(result["content"][0]["text"])
+    assert payload == {"web": {"status": "ok"}}
+
+
+def test_compact_mode_keeps_cached_legacy_calls_working():
+    gateway = AhmedToolboxGateway(
+        agent_reach=_FakeReach(),
+        compact_surface_enabled=True,
+    )
+
+    result = gateway.call_public_tool("reach_doctor", {})
+
+    assert result["isError"] is False
