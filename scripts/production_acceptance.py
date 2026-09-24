@@ -183,7 +183,11 @@ def main() -> None:
         missing = sorted(required - set(names))
         assert not missing, f"missing required tools: {missing}"
         state["tools"] = names
-        return "MCP tools/list exposed required production tools", {"tool_count": len(names)}, latency
+        return (
+            "MCP tools/list exposed required production tools",
+            {"tool_count": len(names)},
+            latency,
+        )
 
     results.append(run_case(2, "MCP tools/list", tools_list))
 
@@ -395,10 +399,7 @@ def main() -> None:
             "video evidence path instead."
         ),
     }
-    print(
-        "PRODUCTION_ACCEPTANCE_REPORT="
-        + json.dumps(report, ensure_ascii=False, sort_keys=True)
-    )
+    print("PRODUCTION_ACCEPTANCE_REPORT=" + json.dumps(report, ensure_ascii=False, sort_keys=True))
     if not report["acceptance_passed"]:
         raise SystemExit(1)
 
