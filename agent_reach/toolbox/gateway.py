@@ -865,6 +865,7 @@ class AhmedToolboxGateway:
 
         # Backward compatibility for clients that cached the previous tool list.
         return self.call_tool(name, arguments, request_id=request_id)
+
     def list_tools(self) -> list[dict[str, Any]]:
         tools = list(self._local_tool_specs())
         if self.observability_enabled and self.observability_store is not None:
