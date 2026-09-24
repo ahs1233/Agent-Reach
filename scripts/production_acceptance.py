@@ -180,9 +180,7 @@ def main() -> None:
     except Exception as exc:  # noqa: BLE001 - acceptance boundary
         security_preflight = {
             "status": "FAIL",
-            "latency_ms": round(
-                (time.perf_counter() - security_started) * 1000.0, 3
-            ),
+            "latency_ms": round((time.perf_counter() - security_started) * 1000.0, 3),
             "behavior": f"{type(exc).__name__}: {exc}"[:1200],
             "detail": {"error_type": type(exc).__name__},
         }
@@ -424,9 +422,7 @@ def main() -> None:
     passed = sum(item.status == "PASS" for item in results)
     failed = sum(item.status == "FAIL" for item in results)
     functional_acceptance_passed = failed == 0 and passed == 10
-    security_auth_configured = (
-        bool(token) and security_preflight["status"] == "PASS"
-    )
+    security_auth_configured = bool(token) and security_preflight["status"] == "PASS"
     report = {
         "schema": "ahmed-toolbox-production-acceptance/v1",
         "target": base_url,
