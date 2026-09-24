@@ -15,7 +15,12 @@ _SERVER_VERSION = "0.1.2"
 _PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18")
 def _validate_auth_configuration(host: str, token: str) -> None:
     """Compatibility wrapper for the production fail-closed startup gate."""
-    AuthConfig.from_environment(legacy_token=token).validate_for_host(host)
+    try:
+        AuthConfig.from_environment(legacy_token=token).validate_for_host(host)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            "AHMED_TOOLBOX_TOKEN is required when AHMED_TOOLBOX_HOST is non-loopback"
+        ) from exc
 
 
 def _initialize_result(params: dict[str, Any]) -> dict[str, Any]:
@@ -43,7 +48,8 @@ def _rpc_error(req_id: Any, code: int, message: str) -> dict[str, Any]:
 
 class ToolboxRequestHandler(BaseHTTPRequestHandler):
     gateway: AhmedToolboxGateway
-    auth_middleware: AuthMiddleware
+    auth_middleware: AuthMiddleware | None = None
+    auth_token: str = ""
 
     server_version = f"AhmedToolbox/{_SERVER_VERSION}"
 
@@ -62,7 +68,12 @@ class ToolboxRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _authorize_request(self) -> bool:
-        decision = self.auth_middleware.authorize(
+        middleware = self.auth_middleware
+        if middleware is None:
+            middleware = AuthMiddleware(
+                AuthConfig.from_environment(legacy_token=self.auth_token)
+            )
+        decision = middleware.authorize(
             self.command,
             self.path,
             self.headers,
@@ -115,14 +126,19 @@ class ToolboxRequestHandler(BaseHTTPRequestHandler):
         if not self._authorize_request():
             return
 
-        normalized_path = self.auth_middleware.normalize_path(self.path)
+        middleware = self.auth_middleware
+        if middleware is None:
+            middleware = AuthMiddleware(
+                AuthConfig.from_environment(legacy_token=self.auth_token)
+            )
+        normalized_path = middleware.normalize_path(self.path)
         if normalized_path == "/auth/token":
             payload = self._read_json_body(allow_empty=True)
             if payload is None:
                 return
             requested_ttl = payload.get("ttl_seconds")
             try:
-                token_payload = self.auth_middleware.issue_access_token(
+                token_payload = middleware.issue_access_token(
                     requested_ttl_seconds=(
                         None if requested_ttl is None else int(requested_ttl)
                     )

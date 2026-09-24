@@ -141,6 +141,8 @@ class AuthMiddleware:
             return AuthDecision(False, "refresh", 401, "invalid refresh credential")
 
         if normalized in {"/", "/mcp"}:
+            if method != "POST":
+                return AuthDecision(True, "method-rejected")
             if self.validate_access_token(bearer):
                 return AuthDecision(True, "mcp")
             return AuthDecision(False, "mcp", 401, "invalid or expired access credential")
