@@ -115,7 +115,9 @@ class ExecutionLogStore:
         return {
             "run_id": run_id,
             "request_id": str(request_id) if request_id is not None else f"req_{uuid.uuid4().hex}",
-            "parent_run_id": str(arguments.get("parent_run_id")) if arguments.get("parent_run_id") else None,
+            "parent_run_id": str(arguments.get("parent_run_id"))
+            if arguments.get("parent_run_id")
+            else None,
             "workflow_id": str(workflow_id) if workflow_id else None,
             "orchestration_id": str(orchestration_id) if orchestration_id else None,
             "session_id": str(session_id) if session_id else None,
@@ -221,8 +223,10 @@ class ExecutionLogStore:
     def stats(self, hours: int = 24) -> dict[str, Any]:
         window = max(1, min(int(hours), 720))
         cutoff = (
-            datetime.now(timezone.utc) - timedelta(hours=window)
-        ).replace(microsecond=0).isoformat()
+            (datetime.now(timezone.utc) - timedelta(hours=window))
+            .replace(microsecond=0)
+            .isoformat()
+        )
         with self._lock:
             rows = self._conn.execute(
                 "SELECT tool_name,duration_ms,success,error_type,fallback_used "

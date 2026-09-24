@@ -169,7 +169,7 @@ def retrieve_with_fallback(
                     "duration_ms": round(elapsed_ms, 3),
                     "content_length": 0,
                     "missing_terms": [],
-                    "next_backend": None,
+                    "next_backend": next_backend,
                 }
             )
             continue
@@ -180,9 +180,7 @@ def retrieve_with_fallback(
             lowered_detail = detail.lower()
             rate_limited = any(marker in lowered_detail for marker in RATE_LIMIT_MARKERS)
             forbidden = any(marker in lowered_detail for marker in FORBIDDEN_MARKERS)
-            blocked = forbidden or any(
-                marker in lowered_detail for marker in ANTI_BOT_MARKERS
-            )
+            blocked = forbidden or any(marker in lowered_detail for marker in ANTI_BOT_MARKERS)
             attempts.append(
                 {
                     "attempt_index": attempt_index,
@@ -194,9 +192,11 @@ def retrieve_with_fallback(
                     "reason_code": (
                         "RATE_LIMITED"
                         if rate_limited
-                        else ("HTTP_403_FORBIDDEN" if forbidden else (
-                            "ANTI_BOT_CHALLENGE" if blocked else "TOOL_ERROR"
-                        ))
+                        else (
+                            "HTTP_403_FORBIDDEN"
+                            if forbidden
+                            else ("ANTI_BOT_CHALLENGE" if blocked else "TOOL_ERROR")
+                        )
                     ),
                     "detail": detail[:1200],
                     "duration_ms": round(elapsed_ms, 3),
@@ -274,9 +274,7 @@ def retrieve_with_fallback(
             detail = _result_text(result)
             if result.get("isError"):
                 lowered_detail = detail.lower()
-                rate_limited = any(
-                    marker in lowered_detail for marker in RATE_LIMIT_MARKERS
-                )
+                rate_limited = any(marker in lowered_detail for marker in RATE_LIMIT_MARKERS)
                 attempts.append(
                     {
                         "attempt_index": len(attempts) + 1,
@@ -285,9 +283,7 @@ def retrieve_with_fallback(
                         "tool": str(discovery_tool),
                         "method": "targeted_search",
                         "status": "FAILED",
-                        "reason_code": (
-                            "RATE_LIMITED" if rate_limited else "TOOL_ERROR"
-                        ),
+                        "reason_code": ("RATE_LIMITED" if rate_limited else "TOOL_ERROR"),
                         "detail": detail[:1200],
                         "duration_ms": round(elapsed_ms, 3),
                         "content_length": 0,
@@ -339,16 +335,8 @@ def retrieve_with_fallback(
             "status": attempt["status"],
             "detail": (
                 attempt["reason_code"]
-                + (
-                    ": " + ", ".join(attempt["missing_terms"])
-                    if attempt["missing_terms"]
-                    else ""
-                )
-                + (
-                    ": " + str(attempt["detail"])
-                    if attempt["detail"]
-                    else ""
-                )
+                + (": " + ", ".join(attempt["missing_terms"]) if attempt["missing_terms"] else "")
+                + (": " + str(attempt["detail"]) if attempt["detail"] else "")
             )[:1200],
         }
         for attempt in attempts
