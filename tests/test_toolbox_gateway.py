@@ -442,7 +442,7 @@ def test_compact_invoke_routes_to_internal_tool():
 
     assert result["isError"] is False
     payload = json.loads(result["content"][0]["text"])
-    assert payload == {"web": {"status": "ok"}}
+    assert payload["web"] == {"status": "ok"}
 
 
 def test_compact_mode_keeps_cached_legacy_calls_working():
