@@ -181,8 +181,7 @@ def main() -> None:
         security_preflight = {
             "status": "FAIL",
             "latency_ms": round(
-                (time.perf_counter() - security_started) * 1000.0,
-                3,
+                (time.perf_counter() - security_started) * 1000.0, 3
             ),
             "behavior": f"{type(exc).__name__}: {exc}"[:1200],
             "detail": {"error_type": type(exc).__name__},
