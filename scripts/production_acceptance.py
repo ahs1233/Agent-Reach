@@ -1,8 +1,8 @@
 """External production acceptance runner for Ahmed Toolbox.
 
-This script is intentionally run from a separate Railway service. It reads the
+This script is intentionally run from a separate execution context. It reads the
 target URL/token from environment variables, never prints the token, and exits
-non-zero if any required production acceptance check fails.
+non-zero if any required production acceptance or security gate fails.
 """
 
 from __future__ import annotations
@@ -34,12 +34,14 @@ class AcceptanceClient:
         self._next_id = 1
 
     def _headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.token}",
+        headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
             "MCP-Protocol-Version": "2025-06-18",
         }
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        return headers
 
     def post_raw(self, body: bytes, *, timeout: float = 30.0) -> requests.Response:
         return requests.post(
@@ -145,8 +147,8 @@ def main() -> None:
         or os.environ.get("AHMED_TOOLBOX_TOKEN", "").strip()
     )
     video_url = os.environ.get("TARGET_VIDEO_URL", "").strip()
-    if not base_url or not token:
-        raise SystemExit("TARGET_URL and TARGET_TOKEN are required")
+    if not base_url:
+        raise SystemExit("TARGET_URL is required")
 
     client = AcceptanceClient(base_url, token)
     results: list[AcceptanceResult] = []
@@ -388,13 +390,17 @@ def main() -> None:
 
     passed = sum(item.status == "PASS" for item in results)
     failed = sum(item.status == "FAIL" for item in results)
+    functional_acceptance_passed = failed == 0 and passed == 10
+    security_auth_configured = bool(token)
     report = {
         "schema": "ahmed-toolbox-production-acceptance/v1",
         "target": base_url,
         "required_tests": 10,
         "passed": passed,
         "failed": failed,
-        "acceptance_passed": failed == 0 and passed == 10,
+        "functional_acceptance_passed": functional_acceptance_passed,
+        "security_auth_configured": security_auth_configured,
+        "acceptance_passed": functional_acceptance_passed and security_auth_configured,
         "results": [asdict(item) for item in results],
         "known_optional_gap": (
             "reach_media_ingest STT is not production-capable because no transcription "
