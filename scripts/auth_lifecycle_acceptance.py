@@ -70,7 +70,10 @@ def main() -> None:
         or os.environ.get("AHMED_TOOLBOX_REFRESH_TOKEN", "").strip()
     )
     phase = os.environ.get("AUTH_LIFECYCLE_PHASE", "pre").strip().lower()
-    call_count = max(50, min(100, int(os.environ.get("AUTH_LIFECYCLE_CALL_COUNT", "75"))))
+    call_count = max(
+        50,
+        min(100, int(os.environ.get("AUTH_LIFECYCLE_CALL_COUNT", "75"))),
+    )
     wait_seconds = max(0.0, float(os.environ.get("AUTH_LIFECYCLE_WAIT_SECONDS", "6")))
     token_ttl = max(1, int(os.environ.get("AUTH_LIFECYCLE_TOKEN_TTL_SECONDS", "5")))
 

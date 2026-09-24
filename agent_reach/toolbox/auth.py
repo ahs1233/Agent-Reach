@@ -63,18 +63,21 @@ class AuthConfig:
         resolved_legacy = legacy_token.strip() or os.environ.get(
             "AHMED_TOOLBOX_TOKEN", ""
         ).strip()
-        resolved_refresh = os.environ.get(
-            "AHMED_TOOLBOX_REFRESH_TOKEN", ""
-        ).strip() or resolved_legacy
+        resolved_refresh = (
+            os.environ.get("AHMED_TOOLBOX_REFRESH_TOKEN", "").strip()
+            or resolved_legacy
+        )
         # Compatibility fallback keeps existing deployments bootable while the
         # explicit Railway signing secret is introduced. Production config uses
         # AHMED_TOOLBOX_AUTH_SECRET.
-        resolved_signing = os.environ.get(
-            "AHMED_TOOLBOX_AUTH_SECRET", ""
-        ).strip() or resolved_refresh
-        allow_legacy = os.environ.get(
-            "AHMED_TOOLBOX_ALLOW_LEGACY_TOKEN", "1"
-        ).strip().lower() not in {"0", "false", "no", "off"}
+        resolved_signing = (
+            os.environ.get("AHMED_TOOLBOX_AUTH_SECRET", "").strip()
+            or resolved_refresh
+        )
+        allow_legacy = (
+            os.environ.get("AHMED_TOOLBOX_ALLOW_LEGACY_TOKEN", "1").strip().lower()
+            not in {"0", "false", "no", "off"}
+        )
         return cls(
             legacy_token=resolved_legacy,
             refresh_token=resolved_refresh,
@@ -186,9 +189,7 @@ class AuthMiddleware:
             signing_input,
             hashlib.sha256,
         ).digest()
-        token = (
-            f"{_ACCESS_TOKEN_PREFIX}.{payload_segment}.{_b64url_encode(signature)}"
-        )
+        token = f"{_ACCESS_TOKEN_PREFIX}.{payload_segment}.{_b64url_encode(signature)}"
         return {
             "schema": "ahmed-toolbox-auth/v1",
             "token_type": "Bearer",
