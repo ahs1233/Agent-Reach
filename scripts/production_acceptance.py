@@ -154,6 +154,40 @@ def main() -> None:
     results: list[AcceptanceResult] = []
     state: dict[str, Any] = {}
 
+    security_started = time.perf_counter()
+    try:
+        unauthenticated = requests.post(
+            base_url + "/mcp",
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "MCP-Protocol-Version": "2025-06-18",
+            },
+            json={"jsonrpc": "2.0", "id": 0, "method": "ping", "params": {}},
+            timeout=15,
+        )
+        security_latency_ms = (time.perf_counter() - security_started) * 1000.0
+        security_preflight = {
+            "status": "PASS" if unauthenticated.status_code == 401 else "FAIL",
+            "latency_ms": round(security_latency_ms, 3),
+            "behavior": (
+                "unauthenticated MCP request rejected"
+                if unauthenticated.status_code == 401
+                else "unauthenticated MCP request was not rejected"
+            ),
+            "detail": {"http_status": unauthenticated.status_code},
+        }
+    except Exception as exc:  # noqa: BLE001 - acceptance boundary
+        security_preflight = {
+            "status": "FAIL",
+            "latency_ms": round(
+                (time.perf_counter() - security_started) * 1000.0,
+                3,
+            ),
+            "behavior": f"{type(exc).__name__}: {exc}"[:1200],
+            "detail": {"error_type": type(exc).__name__},
+        }
+
     def health():
         started = time.perf_counter()
         response = requests.get(base_url + "/health", timeout=15)
@@ -391,7 +425,9 @@ def main() -> None:
     passed = sum(item.status == "PASS" for item in results)
     failed = sum(item.status == "FAIL" for item in results)
     functional_acceptance_passed = failed == 0 and passed == 10
-    security_auth_configured = bool(token)
+    security_auth_configured = (
+        bool(token) and security_preflight["status"] == "PASS"
+    )
     report = {
         "schema": "ahmed-toolbox-production-acceptance/v1",
         "target": base_url,
@@ -400,6 +436,7 @@ def main() -> None:
         "failed": failed,
         "functional_acceptance_passed": functional_acceptance_passed,
         "security_auth_configured": security_auth_configured,
+        "security_preflight": security_preflight,
         "acceptance_passed": functional_acceptance_passed and security_auth_configured,
         "results": [asdict(item) for item in results],
         "known_optional_gap": (
