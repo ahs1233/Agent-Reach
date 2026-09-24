@@ -407,6 +407,29 @@ class RemoteMCPClient:
         health_names = {"runtime_status", "reach_doctor"}
         public = [tool for tool in full if tool.get("name") in health_names]
         public.extend(self._public_meta_tool_specs())
+        full_bytes = len(
+            json.dumps(full, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+        public_bytes = len(
+            json.dumps(public, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+        print(
+            json.dumps(
+                {
+                    "event": "mcp_compact_surface",
+                    "full_tool_count": len(full),
+                    "public_tool_count": len(public),
+                    "full_schema_bytes": full_bytes,
+                    "public_schema_bytes": public_bytes,
+                    "reduction_ratio": (
+                        round(1.0 - (public_bytes / full_bytes), 4)
+                        if full_bytes
+                        else 0.0
+                    ),
+                }
+            ),
+            flush=True,
+        )
         return public
 
     def _catalog_result(self, arguments: dict[str, Any]) -> dict[str, Any]:
