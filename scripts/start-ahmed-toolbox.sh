@@ -119,6 +119,21 @@ if workflow.get("status") != "ok":
 skill = payload("runtime_skill_execute", {"name": "__startup_doctor_skill__"})
 if skill.get("status") != "ok":
     raise SystemExit(f"runtime skill smoke failed: {skill}")
+skill_state = payload("runtime_skill_get", {"name": "__startup_doctor_skill__"})
+print(
+    "__AHMED_STARTUP_SKILL_STATE__"
+    + json.dumps(
+        {
+            "name": skill_state["name"],
+            "revision": skill_state["revision"],
+            "successes": skill_state["successes"],
+            "failures": skill_state["failures"],
+            "score": skill_state["score"],
+            "trust_status": skill_state.get("skill_policy", {}).get("status"),
+        },
+        ensure_ascii=False,
+    )
+)
 
 payload(
     "runtime_memory_put",
