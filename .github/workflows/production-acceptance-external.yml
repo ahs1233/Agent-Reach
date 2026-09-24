@@ -1,0 +1,42 @@
+name: Production Acceptance External
+
+on:
+  push:
+    branches:
+      - stabilization/external-production-acceptance
+    paths:
+      - ".github/workflows/production-acceptance-external.yml"
+      - "scripts/production_acceptance.py"
+  workflow_dispatch:
+
+jobs:
+  external-production-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install runner dependency
+        run: python -m pip install --disable-pip-version-check requests
+
+      - name: Verify production token secret is configured
+        env:
+          TARGET_TOKEN: ${{ secrets.AHMED_TOOLBOX_TOKEN }}
+        run: |
+          if [ -z "$TARGET_TOKEN" ]; then
+            echo "::error::AHMED_TOOLBOX_TOKEN repository secret is not configured."
+            exit 1
+          fi
+
+      - name: Run 10 external production acceptance tests
+        env:
+          TARGET_URL: "https://agent-reach-production.up.railway.app"
+          TARGET_TOKEN: ${{ secrets.AHMED_TOOLBOX_TOKEN }}
+          TARGET_VIDEO_URL: "https://www.youtube.com/watch?v=jK4K0g9bsdQ"
+        run: python scripts/production_acceptance.py
