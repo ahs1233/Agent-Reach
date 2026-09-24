@@ -247,3 +247,55 @@ def test_dynamic_registration_is_chatgpt_only_and_stateless():
         registered["client_id"],
         "https://chatgpt.com/connector_platform_oauth_redirect",
     )
+
+
+def test_codex_cimd_loopback_clients_are_supported_and_strict():
+    provider = AhmedOAuthProvider(
+        OAuthConfig(
+            issuer="https://toolbox.example",
+            resource="https://toolbox.example/mcp",
+            signing_secret="signing-secret",
+            owner_secret="owner-secret",
+        )
+    )
+
+    provider.validate_client_redirect(
+        "https://chatgpt.com/oauth/codex/client.json",
+        "http://127.0.0.1:43123/callback",
+    )
+    provider.validate_client_redirect(
+        "https://chatgpt.com/oauth/codex/client.json",
+        "http://localhost:43123/callback",
+    )
+
+    callback_id = "abc123ABC_-x"
+    provider.validate_client_redirect(
+        f"https://chatgpt.com/oauth/codex/{callback_id}/client.json",
+        f"http://127.0.0.1:43123/callback/{callback_id}",
+    )
+
+    bad_pairs = [
+        (
+            "https://chatgpt.com/oauth/codex/client.json",
+            "https://127.0.0.1:43123/callback",
+        ),
+        (
+            "https://chatgpt.com/oauth/codex/client.json",
+            "http://127.0.0.1:43123/callback/wrong",
+        ),
+        (
+            f"https://chatgpt.com/oauth/codex/{callback_id}/client.json",
+            "http://127.0.0.1:43123/callback",
+        ),
+        (
+            f"https://chatgpt.com/oauth/codex/{callback_id}/client.json",
+            "http://127.0.0.1:43123/callback/other",
+        ),
+    ]
+    for client_id, redirect_uri in bad_pairs:
+        try:
+            provider.validate_client_redirect(client_id, redirect_uri)
+        except Exception:
+            pass
+        else:
+            raise AssertionError(f"unexpectedly accepted {client_id=} {redirect_uri=}")
