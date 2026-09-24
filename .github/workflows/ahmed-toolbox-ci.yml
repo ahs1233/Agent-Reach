@@ -54,6 +54,7 @@ jobs:
       - name: Ruff format
         run: |
           ruff format --check agent_reach/toolbox/observability.py agent_reach/toolbox/retrieval.py
+          ruff format --diff tests/golden/test_golden_suite.py tests/test_toolbox_observability.py
           ruff format --check tests/golden tests/test_toolbox_observability.py tests/test_failure_matrix.py
 
       - name: Scoped mypy
