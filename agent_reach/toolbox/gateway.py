@@ -296,222 +296,6 @@ class RemoteMCPClient:
                 self._notify_initialized()
             self._initialized = True
 
-    @staticmethod
-    def _public_meta_tool_specs() -> list[dict[str, Any]]:
-        return [
-            {
-                "name": "toolbox_catalog",
-                "description": (
-                    "Search the internal Ahmed Toolbox capability catalog without loading every "
-                    "tool schema into the model context. Use this before toolbox_invoke when the "
-                    "exact internal tool name or arguments are unknown. Request schemas only for "
-                    "the small set of tools you intend to call."
-                ),
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "maxLength": 200,
-                            "description": "Optional name/description search text.",
-                        },
-                        "category": {
-                            "type": "string",
-                            "enum": [
-                                "all",
-                                "runtime",
-                                "research",
-                                "orchestration",
-                                "ace",
-                                "reach",
-                                "observability",
-                                "remote",
-                            ],
-                            "default": "all",
-                        },
-                        "include_schema": {
-                            "type": "boolean",
-                            "default": False,
-                            "description": (
-                                "Include inputSchema only for returned matches. Prefer false for "
-                                "discovery, then true with an exact/specific query before invoking."
-                            ),
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 20,
-                            "default": 12,
-                        },
-                    },
-                    "additionalProperties": False,
-                },
-            },
-            {
-                "name": "toolbox_invoke",
-                "description": (
-                    "Invoke one internal Ahmed Toolbox tool by exact name. Discover the tool with "
-                    "toolbox_catalog first when needed, and pass arguments matching that tool's "
-                    "inputSchema. This preserves the full internal capability set behind a compact "
-                    "public MCP surface."
-                ),
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["tool_name"],
-                    "properties": {
-                        "tool_name": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 200,
-                        },
-                        "arguments": {
-                            "type": "object",
-                            "default": {},
-                            "additionalProperties": True,
-                        },
-                    },
-                    "additionalProperties": False,
-                },
-            },
-        ]
-
-    @staticmethod
-    def _catalog_category(tool_name: str) -> str:
-        if tool_name.startswith("runtime_"):
-            return "runtime"
-        if tool_name.startswith("orchestration_"):
-            return "orchestration"
-        if tool_name.startswith("ace_"):
-            return "ace"
-        if tool_name.startswith("research_"):
-            return "research"
-        if tool_name.startswith("reach_"):
-            return "reach"
-        if tool_name == "toolbox_execution_stats":
-            return "observability"
-        if "__" in tool_name:
-            return "remote"
-        return "other"
-
-    def list_public_tools(self) -> list[dict[str, Any]]:
-        """Return the externally advertised MCP surface.
-
-        The full internal registry remains available to runtime/subagents through
-        list_tools. Compact mode changes only what remote clients receive from
-        tools/list; no internal capability is removed.
-        """
-        if not self.compact_surface_enabled:
-            return self.list_tools()
-
-        full = self.list_tools()
-        health_names = {"runtime_status", "reach_doctor"}
-        public = [tool for tool in full if tool.get("name") in health_names]
-        public.extend(self._public_meta_tool_specs())
-        full_bytes = len(
-            json.dumps(full, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        )
-        public_bytes = len(
-            json.dumps(public, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        )
-        print(
-            json.dumps(
-                {
-                    "event": "mcp_compact_surface",
-                    "full_tool_count": len(full),
-                    "public_tool_count": len(public),
-                    "full_schema_bytes": full_bytes,
-                    "public_schema_bytes": public_bytes,
-                    "reduction_ratio": (
-                        round(1.0 - (public_bytes / full_bytes), 4)
-                        if full_bytes
-                        else 0.0
-                    ),
-                }
-            ),
-            flush=True,
-        )
-        return public
-
-    def _catalog_result(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        query = str(arguments.get("query") or "").strip().lower()
-        category = str(arguments.get("category") or "all").strip().lower()
-        include_schema = bool(arguments.get("include_schema", False))
-        try:
-            limit = int(arguments.get("limit") or 12)
-        except (TypeError, ValueError):
-            limit = 12
-        limit = max(1, min(limit, 20))
-
-        matches: list[dict[str, Any]] = []
-        for spec in self.list_tools():
-            name = str(spec.get("name") or "")
-            if not name:
-                continue
-            tool_category = self._catalog_category(name)
-            if category != "all" and tool_category != category:
-                continue
-            description = str(spec.get("description") or "").strip()
-            haystack = f"{name} {description}".lower()
-            if query and all(term not in haystack for term in query.split()):
-                continue
-            item: dict[str, Any] = {
-                "name": name,
-                "category": tool_category,
-                "description": description[:280],
-            }
-            if include_schema:
-                item["inputSchema"] = spec.get("inputSchema") or {
-                    "type": "object",
-                    "properties": {},
-                }
-            matches.append(item)
-            if len(matches) >= limit:
-                break
-
-        return self._text_result(
-            json.dumps(
-                {
-                    "schema": "ahmed-toolbox-catalog/v1",
-                    "query": query,
-                    "category": category,
-                    "include_schema": include_schema,
-                    "matches": matches,
-                },
-                ensure_ascii=False,
-                default=str,
-            )
-        )
-
-    def call_public_tool(
-        self,
-        name: str,
-        arguments: dict[str, Any] | None = None,
-        *,
-        request_id: str | int | None = None,
-    ) -> dict[str, Any]:
-        """Dispatch public tools while keeping cached legacy calls valid."""
-        arguments = arguments or {}
-        if self.compact_surface_enabled and name == "toolbox_catalog":
-            return self._catalog_result(arguments)
-        if self.compact_surface_enabled and name == "toolbox_invoke":
-            tool_name = str(arguments.get("tool_name") or "").strip()
-            if not tool_name:
-                return self._text_result("tool_name is required", is_error=True)
-            if tool_name in {"toolbox_catalog", "toolbox_invoke"}:
-                return self._text_result(
-                    f"meta-tool recursion denied: {tool_name}", is_error=True
-                )
-            nested_arguments = arguments.get("arguments") or {}
-            if not isinstance(nested_arguments, dict):
-                return self._text_result("arguments must be an object", is_error=True)
-            return self.call_tool(
-                tool_name,
-                nested_arguments,
-                request_id=request_id,
-            )
-
-        # Backward compatibility for clients that cached the previous tool list.
-        return self.call_tool(name, arguments, request_id=request_id)
     def list_tools(self) -> list[dict[str, Any]]:
         self.ensure_initialized()
         payload = self.rpc("tools/list")
@@ -865,6 +649,222 @@ class AhmedToolboxGateway:
             },
         ]
 
+    @staticmethod
+    def _public_meta_tool_specs() -> list[dict[str, Any]]:
+        return [
+            {
+                "name": "toolbox_catalog",
+                "description": (
+                    "Search the internal Ahmed Toolbox capability catalog without loading every "
+                    "tool schema into the model context. Use this before toolbox_invoke when the "
+                    "exact internal tool name or arguments are unknown. Request schemas only for "
+                    "the small set of tools you intend to call."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "maxLength": 200,
+                            "description": "Optional name/description search text.",
+                        },
+                        "category": {
+                            "type": "string",
+                            "enum": [
+                                "all",
+                                "runtime",
+                                "research",
+                                "orchestration",
+                                "ace",
+                                "reach",
+                                "observability",
+                                "remote",
+                            ],
+                            "default": "all",
+                        },
+                        "include_schema": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": (
+                                "Include inputSchema only for returned matches. Prefer false for "
+                                "discovery, then true with an exact/specific query before invoking."
+                            ),
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 20,
+                            "default": 12,
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "toolbox_invoke",
+                "description": (
+                    "Invoke one internal Ahmed Toolbox tool by exact name. Discover the tool with "
+                    "toolbox_catalog first when needed, and pass arguments matching that tool's "
+                    "inputSchema. This preserves the full internal capability set behind a compact "
+                    "public MCP surface."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["tool_name"],
+                    "properties": {
+                        "tool_name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 200,
+                        },
+                        "arguments": {
+                            "type": "object",
+                            "default": {},
+                            "additionalProperties": True,
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+            },
+        ]
+
+    @staticmethod
+    def _catalog_category(tool_name: str) -> str:
+        if tool_name.startswith("runtime_"):
+            return "runtime"
+        if tool_name.startswith("orchestration_"):
+            return "orchestration"
+        if tool_name.startswith("ace_"):
+            return "ace"
+        if tool_name.startswith("research_"):
+            return "research"
+        if tool_name.startswith("reach_"):
+            return "reach"
+        if tool_name == "toolbox_execution_stats":
+            return "observability"
+        if "__" in tool_name:
+            return "remote"
+        return "other"
+
+    def list_public_tools(self) -> list[dict[str, Any]]:
+        """Return the externally advertised MCP surface.
+
+        The full internal registry remains available to runtime/subagents through
+        list_tools. Compact mode changes only what remote clients receive from
+        tools/list; no internal capability is removed.
+        """
+        if not self.compact_surface_enabled:
+            return self.list_tools()
+
+        full = self.list_tools()
+        health_names = {"runtime_status", "reach_doctor"}
+        public = [tool for tool in full if tool.get("name") in health_names]
+        public.extend(self._public_meta_tool_specs())
+        full_bytes = len(
+            json.dumps(full, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+        public_bytes = len(
+            json.dumps(public, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+        print(
+            json.dumps(
+                {
+                    "event": "mcp_compact_surface",
+                    "full_tool_count": len(full),
+                    "public_tool_count": len(public),
+                    "full_schema_bytes": full_bytes,
+                    "public_schema_bytes": public_bytes,
+                    "reduction_ratio": (
+                        round(1.0 - (public_bytes / full_bytes), 4)
+                        if full_bytes
+                        else 0.0
+                    ),
+                }
+            ),
+            flush=True,
+        )
+        return public
+
+    def _catalog_result(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        query = str(arguments.get("query") or "").strip().lower()
+        category = str(arguments.get("category") or "all").strip().lower()
+        include_schema = bool(arguments.get("include_schema", False))
+        try:
+            limit = int(arguments.get("limit") or 12)
+        except (TypeError, ValueError):
+            limit = 12
+        limit = max(1, min(limit, 20))
+
+        matches: list[dict[str, Any]] = []
+        for spec in self.list_tools():
+            name = str(spec.get("name") or "")
+            if not name:
+                continue
+            tool_category = self._catalog_category(name)
+            if category != "all" and tool_category != category:
+                continue
+            description = str(spec.get("description") or "").strip()
+            haystack = f"{name} {description}".lower()
+            if query and all(term not in haystack for term in query.split()):
+                continue
+            item: dict[str, Any] = {
+                "name": name,
+                "category": tool_category,
+                "description": description[:280],
+            }
+            if include_schema:
+                item["inputSchema"] = spec.get("inputSchema") or {
+                    "type": "object",
+                    "properties": {},
+                }
+            matches.append(item)
+            if len(matches) >= limit:
+                break
+
+        return self._text_result(
+            json.dumps(
+                {
+                    "schema": "ahmed-toolbox-catalog/v1",
+                    "query": query,
+                    "category": category,
+                    "include_schema": include_schema,
+                    "matches": matches,
+                },
+                ensure_ascii=False,
+                default=str,
+            )
+        )
+
+    def call_public_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        request_id: str | int | None = None,
+    ) -> dict[str, Any]:
+        """Dispatch public tools while keeping cached legacy calls valid."""
+        arguments = arguments or {}
+        if self.compact_surface_enabled and name == "toolbox_catalog":
+            return self._catalog_result(arguments)
+        if self.compact_surface_enabled and name == "toolbox_invoke":
+            tool_name = str(arguments.get("tool_name") or "").strip()
+            if not tool_name:
+                return self._text_result("tool_name is required", is_error=True)
+            if tool_name in {"toolbox_catalog", "toolbox_invoke"}:
+                return self._text_result(
+                    f"meta-tool recursion denied: {tool_name}", is_error=True
+                )
+            nested_arguments = arguments.get("arguments") or {}
+            if not isinstance(nested_arguments, dict):
+                return self._text_result("arguments must be an object", is_error=True)
+            return self.call_tool(
+                tool_name,
+                nested_arguments,
+                request_id=request_id,
+            )
+
+        # Backward compatibility for clients that cached the previous tool list.
+        return self.call_tool(name, arguments, request_id=request_id)
     def list_tools(self) -> list[dict[str, Any]]:
         tools = list(self._local_tool_specs())
         if self.observability_enabled and self.observability_store is not None:
