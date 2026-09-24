@@ -191,4 +191,4 @@ class AhmedToolboxClient:
         )
         if not isinstance(result, dict):
             raise AhmedToolboxError("Ahmed ToolBox tools/call payload is malformed")
-        return result\n
+        return result
