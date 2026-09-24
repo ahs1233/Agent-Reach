@@ -7,7 +7,8 @@ STARTUP_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "start-ahmed-
 def test_model_provider_failure_isolated_from_core_startup():
     script = STARTUP_SCRIPT.read_text(encoding="utf-8")
 
-    assert '"timeout_seconds": 45' in script
+    assert '"timeout_seconds": 75' in script
+    assert '"timeout_seconds": 60' in script
     assert "except (RuntimeError, SystemExit) as exc:" in script
     assert "model_subagent_degraded = str(exc)" in script
     assert "__AHMED_MODEL_SUBAGENT_STARTUP_ACCEPTANCE__degraded:" in script
