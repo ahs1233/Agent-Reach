@@ -3,45 +3,41 @@
 Date: 2026-09-24  
 Repository: `ahs1233/Agent-Reach`  
 Branch: `feat/ahmed-toolbox-mcp`  
-Production SHA: `f6b9f05e2b1f78325c0b5d0223c5eb2f6c3d9eca`  
-Railway deployment: `f393233a-ee05-49d0-a107-7b15cf8ed7ca`  
+Baseline code SHA: `fec1818f93c59e9747d45675aa65fcc029d59d9b`  
 Public endpoint: `https://agent-reach-production.up.railway.app`
 
-## Deployment state
+## Current verified state
 
-- Railway deployment: SUCCESS
-- MCP listener logged on `0.0.0.0:8080/mcp`
-- persistent volume: `/root/.agent-reach`
-- healthcheck path: `/health`
-- production region: iad, one replica
-- GitHub general `ci`: SUCCESS on exact SHA
-- `Ahmed ToolBox CI`: SUCCESS on exact SHA
+- External functional Production Acceptance: **10/10 PASS**
+- External security preflight: **FAIL** — unauthenticated MCP request returned HTTP 200
+- Production auth token reference: resolves empty
+- Final stabilization status: **STABILIZATION NOT YET PASSED**
+- Sprint2 temporary runner was restored to its original `ahmed-toolbox` start command and its restoration deployment succeeded.
 
-## Runtime verification observed in production
+## Runtime verification
 
-Dual-temporal startup acceptance:
-
-- status: PASSED
-- current live gate: PASSED
+Dual-temporal startup acceptance remains verified:
+- current-live gate: PASSED
 - stale-live gate: BLOCKED
 - contradiction selected current data: true
 - run audit: true
-- live/recent retrieval method: `reach_read_url`
 
 Startup skill state:
+- `__startup_doctor_skill__`
+- revision 1
+- successes 10
+- failures 0
+- score 0.9166666667
+- `TRUSTED_PRODUCTION`
 
-- skill: `__startup_doctor_skill__`
-- revision: 1
-- successes: 8
-- failures: 0
-- score: 0.90
-- trust status: `EXPERIMENTAL`
-
-This is correct under the stabilization trust policy because Trusted requires at least 10 qualifying successes. No synthetic executions were added merely to promote the skill.
+Model-subagent startup:
+- earlier observation: provider deadline at 60422.75 ms
+- latest verified observation: `__AHMED_MODEL_SUBAGENT_STARTUP_ACCEPTANCE__ok`
+- gateway/client inspection: model client and HTTP session are reused, not recreated per call
 
 ## Resource baseline
 
-One-hour Railway sample, 61 points:
+Previously captured one-hour Railway sample, 61 points:
 
 | Measurement | Average | Min | Max |
 | --- | ---: | ---: | ---: |
@@ -50,12 +46,22 @@ One-hour Railway sample, 61 points:
 | NETWORK_RX_GB/sample | 0.000022783 | 0 | 0.000280968 |
 | NETWORK_TX_GB/sample | 0.000006442 | 0 | 0.000034315 |
 
-## Known production weakness
+## External acceptance baseline
 
-The live model-subagent startup acceptance is currently degraded:
+GitHub Actions external run `35964631234` observed:
+- 61 production MCP tools
+- `reach_doctor`: PASS
+- live web search: PASS
+- URL retrieval: PASS
+- Research provenance workflow + audit: PASS
+- Browser Use YouTube evidence: PASS
+- malformed JSON handling: PASS
+- five concurrent external clients: PASS
 
-- failure: `SubagentModelError: model provider deadline exceeded`
-- observed delegation duration: 60422.75 ms
-- core MCP service remained serving and Railway deployment remained SUCCESS
+The functional result is accepted as real external evidence. It is not sufficient for final stabilization because the security preflight failed.
 
-This is recorded as an unresolved external-provider reliability weakness. It is not hidden or counted as a pass.
+## Security blocker
+
+`agent_reach/toolbox/server.py` treats an empty auth token as authorization granted. Production currently resolves `AHMED_TOOLBOX_TOKEN` to an empty value, so the public MCP endpoint is not enforcing Bearer authentication.
+
+The security-aware acceptance runner now verifies an unauthenticated `ping` receives HTTP 401. Final PASS is forbidden until that preflight passes.

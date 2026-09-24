@@ -6,6 +6,16 @@
 >
 > No new engines, agents, or non-reliability features may be added until the Production Acceptance Gate passes. Allowed changes are limited to Reliability, Testing, Observability, Security, Failure Recovery, Performance, Regression Prevention, and Production Verification.
 
+## Current Gate Status — 2026-09-24
+
+- Steps 1–9: completed for the stabilization baseline.
+- Step 10 functional external acceptance: **10/10 PASS** from GitHub Actions against the public Railway endpoint.
+- Security preflight: **FAIL** because an unauthenticated MCP request returned HTTP 200 instead of 401.
+- Startup skill: **TRUSTED_PRODUCTION**, revision 1, 10 successes, 0 failures, score 0.9166666667.
+- Latest model-subagent startup acceptance: **ok**; the prior 60.4 s provider deadline is retained as a transient reliability observation.
+- Temporary Sprint2 acceptance-runner changes were restored successfully.
+- Final status: **STABILIZATION NOT YET PASSED** until production authentication is enabled and the security-aware external acceptance rerun passes.
+
 ## Ground Truth Baseline
 
 | Field | Actual value | Verification |

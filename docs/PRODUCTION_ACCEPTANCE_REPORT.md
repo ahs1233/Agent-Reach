@@ -3,54 +3,88 @@
 Date: 2026-09-24  
 Repository: `ahs1233/Agent-Reach`  
 Branch: `feat/ahmed-toolbox-mcp`  
-Target SHA: `f6b9f05e2b1f78325c0b5d0223c5eb2f6c3d9eca`  
-Target deployment: `f393233a-ee05-49d0-a107-7b15cf8ed7ca`  
-Target URL: `https://agent-reach-production.up.railway.app`
+Production endpoint: `https://agent-reach-production.up.railway.app`
 
 ## Acceptance status
 
 **STABILIZATION NOT YET PASSED**
 
-Production deployment, CI, deterministic stress, dual-temporal live acceptance, and skill-policy behavior are verified. The mandatory external authenticated Production Acceptance suite has not completed, so no 100% production acceptance claim is made.
+The external functional Production Acceptance suite is complete: **10/10 required functional cases passed from outside Agent-Reach**. Final stabilization is still blocked by a security preflight: the public MCP endpoint currently accepts an unauthenticated request instead of returning HTTP 401.
 
-## Required external suite
+## External Production Acceptance
 
-The repository contains `scripts/production_acceptance.py`, designed to run from a separate host and verify:
+External runner: GitHub Actions, run `35964631234`  
+External runner commit: `4205a01250556e3bac0d2ef71d6f55abf36830d1`  
+Target: public Railway production URL  
+Functional result: **10 PASS / 0 FAIL**
 
-1. `/health`
-2. MCP `tools/list`
-3. `reach_doctor`
-4. `reach_web_search`
-5. `reach_read_url`
-6. `research_start_run`
-7. real production-capable Browser Use video evidence path
-8. full source → evidence → claim → output → audit Research workflow
-9. malformed JSON rejection
-10. five concurrent MCP clients
+| ID | Case | Result | Observed latency |
+| ---: | --- | --- | ---: |
+| 1 | `/health` | PASS | 35.616 ms |
+| 2 | MCP `tools/list` (61 tools) | PASS | 487.709 ms |
+| 3 | `reach_doctor` | PASS | 2053.165 ms |
+| 4 | live `reach_web_search` | PASS | 1329.357 ms |
+| 5 | `reach_read_url` / Example Domain | PASS | 274.671 ms |
+| 6 | `research_start_run` | PASS | 38.627 ms |
+| 7 | real Browser Use YouTube evidence path | PASS | 6289.825 ms |
+| 8 | source → evidence → claim → output → audit | PASS | 208.329 ms |
+| 9 | malformed JSON rejected with HTTP 400 | PASS | 35.210 ms |
+| 10 | five independent concurrent MCP clients | PASS | 85.171 ms wall |
 
-`reach_media_ingest` STT remains not production-capable because no transcription provider is configured; the production-capable rendered Browser Use video path is the media acceptance path.
+The Research workflow audit returned `audit_passed=true`. The concurrent-client case completed all five clients successfully.
 
-## What was actually attempted
+## Security preflight
 
-A new isolated Railway acceptance service was requested from the canonical repository. Railway rejected service creation with:
+Result: **FAIL**
 
-`Free plan resource provision limit exceeded. Please upgrade to provision more resources!`
+An MCP `ping` sent without an Authorization header returned **HTTP 200**, not HTTP 401.
 
-A second approach used the existing historical `Ahmed-Research-Sprint2` service as a temporary external runner. Its original pre-deploy acceptance was preserved. Railway configuration-as-code restored its original pre-deploy command during redeploy, so the new `production_acceptance.py` command did not execute. No Production Acceptance result was fabricated from that deployment.
+Independent Railway reference probes also showed:
+- reference to `Agent-Reach.RAILWAY_PUBLIC_DOMAIN`: non-empty
+- reference to `Agent-Reach.AHMED_TOOLBOX_TOKEN`: empty
 
-The historical Sprint2 service was restored to its original pre-deploy command:
+The server implementation explicitly permits requests when the configured auth token is empty. Therefore the production endpoint is functionally healthy but currently unauthenticated.
 
-`python -m agent_reach.toolbox.sprint2_live_acceptance`
+The acceptance runner was hardened so a future run cannot report a false green merely because the runner has a token. Canonical hardening commit:
+`4e21fb3796e505c81cd087a63003c3c6a1df0719`
 
-Temporary TARGET variables were cleared after the attempt.
+Formatter follow-up:
+`fec1818f93c59e9747d45675aa65fcc029d59d9b`
 
-## External evidence currently available
+## Model-subagent reliability
 
-Railway observed external `openai-mcp/1.0.0` POST traffic to `/mcp` returning HTTP 200 on the target deployment, with observed durations including 299 ms, 1356 ms and 6009 ms. This proves external MCP traffic reached production, but it is not a substitute for the required named 10-case acceptance suite.
+A previous production startup observed:
+- `SubagentModelError: model provider deadline exceeded`
+- delegation duration: 60422.75 ms
 
-## Remaining blockers before PASS
+The latest verified production startup subsequently logged:
+`__AHMED_MODEL_SUBAGENT_STARTUP_ACCEPTANCE__ok`
 
-1. Execute `scripts/production_acceptance.py` from an external runner that can receive `AHMED_TOOLBOX_TOKEN` without exposing it.
-2. Require all 10 named acceptance cases to PASS.
-3. Re-run or resolve the degraded model-subagent provider deadline if model-subagent live acceptance is included in the final production reliability gate.
-4. Record the exact external report and update this document.
+Code inspection confirms the gateway creates one `SubagentModelClient` and reuses its `requests.Session`; the client is not recreated per delegated call. The earlier timeout is retained as a transient external-provider/network reliability observation rather than attributed to per-call model construction.
+
+## Skill policy
+
+Latest verified production startup state:
+- skill: `__startup_doctor_skill__`
+- revision: 1
+- successes: 10
+- failures: 0
+- score: 0.9166666667
+- trust status: `TRUSTED_PRODUCTION`
+
+No synthetic runs were added to force promotion.
+
+## Known optional gap
+
+`reach_media_ingest` STT remains unavailable without a configured transcription provider. Production media acceptance uses the working rendered Browser Use YouTube evidence path instead.
+
+## Remaining blocker before final PASS
+
+1. Configure a non-empty production `AHMED_TOOLBOX_TOKEN` through a secure secret path and update authorized clients without exposing the value.
+2. Re-run the security-aware external acceptance suite.
+3. Require the unauthenticated preflight to return HTTP 401 **and** all ten functional cases to remain PASS.
+4. Require final canonical CI and Railway deployment to be green.
+
+Until those conditions hold, the required final status remains:
+
+**STABILIZATION NOT YET PASSED**
