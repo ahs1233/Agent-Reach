@@ -143,6 +143,12 @@ class AuthMiddleware:
         if normalized in {"/", "/mcp"}:
             if method != "POST":
                 return AuthDecision(True, "method-rejected")
+            # Local/dev handlers may intentionally run without credentials.
+            # Production non-loopback startup is separately fail-closed by
+            # AuthConfig.validate_for_host(), so this cannot silently open the
+            # public service.
+            if not (self.config.legacy_token or self.config.refresh_token):
+                return AuthDecision(True, "mcp-local-no-auth")
             if self.validate_access_token(bearer):
                 return AuthDecision(True, "mcp")
             return AuthDecision(False, "mcp", 401, "invalid or expired access credential")
