@@ -13,6 +13,16 @@ from .gateway import AhmedToolboxGateway, RemoteMCPError
 _MAX_REQUEST_BYTES = 1024 * 1024
 _SERVER_VERSION = "0.1.2"
 _PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18")
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _validate_auth_configuration(host: str, token: str) -> None:
+    """Fail closed when the MCP server is exposed beyond loopback."""
+    if token.strip() or host.strip().lower() in _LOOPBACK_HOSTS:
+        return
+    raise RuntimeError(
+        "AHMED_TOOLBOX_TOKEN is required when AHMED_TOOLBOX_HOST is non-loopback"
+    )
 
 
 def _initialize_result(params: dict[str, Any]) -> dict[str, Any]:
@@ -173,6 +183,7 @@ def main() -> None:
         or os.environ.get("AHMED_TOOLBOX_PORT", "8765")
     )
     token = os.environ.get("AHMED_TOOLBOX_TOKEN", "")
+    _validate_auth_configuration(host, token)
 
     gateway = AhmedToolboxGateway.from_environment()
 
