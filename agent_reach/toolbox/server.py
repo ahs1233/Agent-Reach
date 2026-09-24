@@ -224,9 +224,10 @@ class ToolboxRequestHandler(BaseHTTPRequestHandler):
     def _login_cookie_header(self, token: str) -> str:
         provider = self.oauth_provider
         max_age = provider.config.login_cookie_ttl_seconds if provider else 0
+        secure = "; Secure" if provider and provider.issuer.startswith("https://") else ""
         return (
             f"{_OAUTH_LOGIN_COOKIE}={token}; Path=/oauth/authorize; Max-Age={max_age}; "
-            "HttpOnly; Secure; SameSite=Lax"
+            f"HttpOnly; SameSite=Lax{secure}"
         )
 
     def _oauth_params_from_form(self, form: dict[str, str]) -> dict[str, Any]:
