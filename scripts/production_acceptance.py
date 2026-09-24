@@ -140,7 +140,10 @@ def run_case(
 
 def main() -> None:
     base_url = os.environ.get("TARGET_URL", "").strip()
-    token = os.environ.get("TARGET_TOKEN", "").strip()
+    token = (
+        os.environ.get("TARGET_TOKEN", "").strip()
+        or os.environ.get("AHMED_TOOLBOX_TOKEN", "").strip()
+    )
     video_url = os.environ.get("TARGET_VIDEO_URL", "").strip()
     if not base_url or not token:
         raise SystemExit("TARGET_URL and TARGET_TOKEN are required")
