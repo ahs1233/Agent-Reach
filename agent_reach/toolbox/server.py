@@ -59,15 +59,6 @@ class ToolboxRequestHandler(BaseHTTPRequestHandler):
         if os.environ.get("AHMED_TOOLBOX_HTTP_LOG", "").lower() in {"1", "true", "yes"}:
             super().log_message(fmt, *args)
 
-    def _authorized(self) -> bool:
-        if not self.auth_token:
-            return True
-        header = self.headers.get("Authorization") or ""
-        if not header.lower().startswith("bearer "):
-            return False
-        supplied = header[7:].strip()
-        return hmac.compare_digest(supplied, self.auth_token)
-
     def _send_json(self, status: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -77,7 +68,44 @@ class ToolboxRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _authorize_request(self) -> bool:
+        decision = self.auth_middleware.authorize(
+            self.command,
+            self.path,
+            self.headers,
+        )
+        if decision.allowed:
+            return True
+        self._send_json(
+            decision.status_code,
+            _rpc_error(None, -32001, "unauthorized"),
+        )
+        return False
+
+    def _read_json_body(self, *, allow_empty: bool = False) -> dict[str, Any] | None:
+        try:
+            content_length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self._send_json(400, _rpc_error(None, -32700, "invalid content length"))
+            return None
+        if content_length == 0 and allow_empty:
+            return {}
+        if content_length <= 0 or content_length > _MAX_REQUEST_BYTES:
+            self._send_json(413, _rpc_error(None, -32700, "request body too large"))
+            return None
+        try:
+            payload = json.loads(self.rfile.read(content_length))
+        except Exception:
+            self._send_json(400, _rpc_error(None, -32700, "invalid JSON"))
+            return None
+        if not isinstance(payload, dict):
+            self._send_json(400, _rpc_error(None, -32600, "request must be an object"))
+            return None
+        return payload
+
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
+        if not self._authorize_request():
+            return
         if self.path.rstrip("/") == "/health":
             self._send_json(200, {"status": "ok", "service": "ahmed-toolbox"})
             return
@@ -91,33 +119,41 @@ class ToolboxRequestHandler(BaseHTTPRequestHandler):
         self._send_json(404, {"status": "not_found"})
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
-        if self.path.rstrip("/") not in {"", "/mcp"}:
+        if not self._authorize_request():
+            return
+
+        normalized_path = self.auth_middleware.normalize_path(self.path)
+        if normalized_path == "/auth/token":
+            payload = self._read_json_body(allow_empty=True)
+            if payload is None:
+                return
+            requested_ttl = payload.get("ttl_seconds")
+            try:
+                token_payload = self.auth_middleware.issue_access_token(
+                    requested_ttl_seconds=(
+                        None if requested_ttl is None else int(requested_ttl)
+                    )
+                )
+            except (TypeError, ValueError):
+                self._send_json(400, _rpc_error(None, -32602, "invalid ttl_seconds"))
+                return
+            except RuntimeError as exc:
+                self._send_json(503, _rpc_error(None, -32003, str(exc)))
+                return
+            self._send_json(200, token_payload)
+            return
+
+        if normalized_path not in {"/", "/mcp"}:
             self._send_json(404, _rpc_error(None, -32601, "not found"))
             return
-        if not self._authorized():
-            self._send_json(401, _rpc_error(None, -32001, "unauthorized"))
-            return
+
         protocol = self.headers.get("MCP-Protocol-Version")
         if protocol is not None and protocol not in _PROTOCOL_VERSIONS:
             self._send_json(400, _rpc_error(None, -32600, "unsupported MCP protocol version"))
             return
 
-        try:
-            content_length = int(self.headers.get("Content-Length") or 0)
-        except ValueError:
-            self._send_json(400, _rpc_error(None, -32700, "invalid content length"))
-            return
-        if content_length <= 0 or content_length > _MAX_REQUEST_BYTES:
-            self._send_json(413, _rpc_error(None, -32700, "request body too large"))
-            return
-
-        try:
-            payload = json.loads(self.rfile.read(content_length))
-        except Exception:
-            self._send_json(400, _rpc_error(None, -32700, "invalid JSON"))
-            return
-        if not isinstance(payload, dict):
-            self._send_json(400, _rpc_error(None, -32600, "request must be an object"))
+        payload = self._read_json_body()
+        if payload is None:
             return
 
         method = payload.get("method")
@@ -183,14 +219,16 @@ def main() -> None:
         or os.environ.get("AHMED_TOOLBOX_PORT", "8765")
     )
     token = os.environ.get("AHMED_TOOLBOX_TOKEN", "")
-    _validate_auth_configuration(host, token)
+    auth_config = AuthConfig.from_environment(legacy_token=token)
+    auth_config.validate_for_host(host)
 
     gateway = AhmedToolboxGateway.from_environment()
+    auth_middleware = AuthMiddleware(auth_config)
 
     handler = type(
         "ConfiguredToolboxHandler",
         (ToolboxRequestHandler,),
-        {"gateway": gateway, "auth_token": token},
+        {"gateway": gateway, "auth_middleware": auth_middleware},
     )
     server = ThreadingHTTPServer((host, port), handler)
     print(f"Ahmed ToolBox MCP listening on http://{host}:{port}/mcp")
@@ -198,4 +236,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main()\n

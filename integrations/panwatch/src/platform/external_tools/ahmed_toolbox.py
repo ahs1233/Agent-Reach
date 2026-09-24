@@ -27,16 +27,22 @@ class AhmedToolboxClient:
         url: str,
         *,
         token: str = "",
+        refresh_token: str = "",
+        access_ttl_seconds: int = 300,
         timeout_seconds: float = 5.0,
         protocol_version: str = "2024-11-05",
     ) -> None:
         self.url = url.rstrip("/")
         self.token = token
+        self.refresh_token = refresh_token
+        self.access_ttl_seconds = max(1, int(access_ttl_seconds))
         self.timeout_seconds = timeout_seconds
         self.protocol_version = protocol_version
         self._lock = threading.RLock()
         self._initialized = False
         self._next_id = 1
+        self._access_token = ""
+        self._access_expires_at = 0.0
         self._client = httpx.Client(timeout=timeout_seconds)
 
     def _id(self) -> int:
@@ -45,13 +51,70 @@ class AhmedToolboxClient:
             self._next_id += 1
             return value
 
+    @classmethod
+    def from_environment(cls, url: str | None = None) -> "AhmedToolboxClient":
+        resolved_url = (
+            url
+            or os.environ.get("AHMED_TOOLBOX_URL", "").strip()
+            or os.environ.get("AHMED_TOOLBOX_MCP_URL", "").strip()
+        )
+        if not resolved_url:
+            raise AhmedToolboxError("AHMED_TOOLBOX_URL is required")
+        return cls(
+            resolved_url,
+            token=os.environ.get("AHMED_TOOLBOX_TOKEN", "").strip(),
+            refresh_token=os.environ.get("AHMED_TOOLBOX_REFRESH_TOKEN", "").strip(),
+            access_ttl_seconds=int(
+                os.environ.get("AHMED_TOOLBOX_ACCESS_TTL_SECONDS", "300")
+            ),
+        )
+
+    def _base_url(self) -> str:
+        return self.url[:-4] if self.url.endswith("/mcp") else self.url
+
+    def _refresh_access_token_locked(self) -> None:
+        if not self.refresh_token:
+            raise AhmedToolboxError("Ahmed ToolBox refresh token is not configured")
+        response = self._client.post(
+            self._base_url() + "/auth/token",
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.refresh_token}",
+            },
+            json={"ttl_seconds": self.access_ttl_seconds},
+        )
+        if response.status_code != 200:
+            raise AhmedToolboxError(
+                f"Ahmed ToolBox token refresh failed: HTTP {response.status_code}"
+            )
+        try:
+            payload = response.json()
+            self._access_token = str(payload["access_token"])
+            expires_in = max(1, int(payload["expires_in"]))
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise AhmedToolboxError("Ahmed ToolBox token refresh payload is invalid") from exc
+        self._access_expires_at = time.time() + expires_in
+
+    def _authorization_token(self) -> str:
+        if not self.refresh_token:
+            return self.token
+        with self._lock:
+            if (
+                not self._access_token
+                or self._access_expires_at - time.time() <= 5.0
+            ):
+                self._refresh_access_token_locked()
+            return self._access_token
+
     def _headers(self) -> dict[str, str]:
         headers = {
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
+        token = self._authorization_token()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         return headers
 
     def _rpc(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -68,6 +131,15 @@ class AhmedToolboxClient:
                 headers=self._headers(),
                 json=payload,
             )
+            if response.status_code == 401 and self.refresh_token:
+                with self._lock:
+                    self._access_token = ""
+                    self._access_expires_at = 0.0
+                response = self._client.post(
+                    self.url,
+                    headers=self._headers(),
+                    json=payload,
+                )
             response.raise_for_status()
         except httpx.HTTPError as exc:
             raise AhmedToolboxError(f"Ahmed ToolBox request failed: {exc}") from exc
@@ -119,4 +191,4 @@ class AhmedToolboxClient:
         )
         if not isinstance(result, dict):
             raise AhmedToolboxError("Ahmed ToolBox tools/call payload is malformed")
-        return result
+        return result\n
