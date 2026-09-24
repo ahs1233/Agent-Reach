@@ -160,7 +160,11 @@ class ExecutionLogStore:
         except (TypeError, ValueError):
             pass
 
-        tokens = {"input_tokens": None, "output_tokens": None, "total_tokens": None}
+        tokens: dict[str, int | None] = {
+            "input_tokens": None,
+            "output_tokens": None,
+            "total_tokens": None,
+        }
         usage = payload.get("usage")
         if isinstance(usage, dict):
             aliases = {
@@ -247,15 +251,16 @@ class ExecutionLogStore:
             if not int(row["success"]):
                 kind = str(row["error_type"] or "ToolError")
                 errors[kind] = errors.get(kind, 0) + 1
+        lowest_candidates: list[dict[str, Any]] = [
+            {
+                "tool_name": name,
+                "calls": counts[0],
+                "success_rate": round(counts[1] / counts[0], 6),
+            }
+            for name, counts in by_tool.items()
+        ]
         lowest = sorted(
-            (
-                {
-                    "tool_name": name,
-                    "calls": counts[0],
-                    "success_rate": round(counts[1] / counts[0], 6),
-                }
-                for name, counts in by_tool.items()
-            ),
+            lowest_candidates,
             key=lambda item: (item["success_rate"], -item["calls"], item["tool_name"]),
         )[:10]
         top_errors = [
