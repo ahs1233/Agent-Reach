@@ -1,0 +1,27 @@
+name: Production Acceptance Auth Check
+
+on:
+  push:
+    branches:
+      - stabilization/external-production-auth-check
+    paths:
+      - ".github/workflows/production-acceptance-auth-check.yml"
+      - "scripts/production_acceptance.py"
+  workflow_dispatch:
+
+jobs:
+  external-production-auth-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --disable-pip-version-check requests
+      - name: Run external production gate
+        env:
+          TARGET_URL: "https://agent-reach-production.up.railway.app"
+          TARGET_TOKEN: "external-acceptance-probe-not-secret"
+          TARGET_VIDEO_URL: "https://www.youtube.com/watch?v=jK4K0g9bsdQ"
+        run: python scripts/production_acceptance.py
