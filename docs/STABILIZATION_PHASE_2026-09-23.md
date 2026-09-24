@@ -1,20 +1,27 @@
 # Ahmed Toolbox — Stabilization & Hardening Phase
 
-> **FEATURE FREEZE ACTIVE**
+> **STABILIZATION GATE PASSED**
 >
-> Freeze start date: **2026-09-23**
+> Freeze start date: **2026-09-23**  
+> Production Acceptance passed: **2026-09-24**
 >
-> No new engines, agents, or non-reliability features may be added until the Production Acceptance Gate passes. Allowed changes are limited to Reliability, Testing, Observability, Security, Failure Recovery, Performance, Regression Prevention, and Production Verification.
+> The stabilization feature freeze has completed. New feature work may resume subject to normal regression, security, and production verification gates.
 
 ## Current Gate Status — 2026-09-24
 
-- Steps 1–9: completed for the stabilization baseline.
-- Step 10 functional external acceptance: **10/10 PASS** from GitHub Actions against the public Railway endpoint.
-- Security preflight: **FAIL** because an unauthenticated MCP request returned HTTP 200 instead of 401.
-- Startup skill: **TRUSTED_PRODUCTION**, revision 1, 10 successes, 0 failures, score 0.9166666667.
-- Latest model-subagent startup acceptance: **ok**; the prior 60.4 s provider deadline is retained as a transient reliability observation.
-- Temporary Sprint2 acceptance-runner changes were restored successfully.
-- Final status: **STABILIZATION NOT YET PASSED** until production authentication is enabled and the security-aware external acceptance rerun passes.
+- Steps 1–9: completed.
+- Step 10 external functional acceptance: **10/10 PASS** against the public Railway endpoint.
+- Security preflight: **PASS** — unauthenticated MCP request returned HTTP 401.
+- Production Bearer token: configured without exposing the secret value.
+- Permanent fail-closed protection: active for non-loopback startup without a token.
+- Startup skill: **TRUSTED_PRODUCTION**, revision 1, 26 successes, 0 failures, score 0.9642857143.
+- Model-subagent startup acceptance: **ok** on the final accepted code deployment.
+- Dual-temporal live acceptance: **PASSED**.
+- Ahmed ToolBox CI: **SUCCESS**.
+- General CI: **SUCCESS**.
+- Production Railway deployment: **SUCCESS**.
+- Temporary Sprint2 runner restored successfully.
+- Final status: **STABILIZATION PASSED**.
 
 ## Ground Truth Baseline
 
@@ -143,7 +150,7 @@ The following tools were present in the live MCP/plugin runtime for this convers
 
 | Skill | Revision | Successes | Failures | Bayesian score | Freeze status | Verification |
 |---|---:|---:|---:|---:|---|---|
-| `__startup_doctor_skill__` | 1 | 2 | 0 | 0.75 | Experimental / Candidate | live `runtime_skill_list`; does not meet ≥10-success Trusted Production policy |
+| `__startup_doctor_skill__` | 1 | 26 | 0 | 0.9642857143 | Trusted Production | final production startup state; trust policy satisfied |
 
 ## Workflows / Agents
 
@@ -153,7 +160,7 @@ The following tools were present in the live MCP/plugin runtime for this convers
 | Startup runtime acceptance | Workflow/acceptance | Ensure runtime can initialize without collapsing service | WORKING | Railway logs: `__AHMED_RUNTIME_STARTUP_ACCEPTANCE__ok` |
 | Startup model-subagent acceptance | Agent acceptance | Ensure configured model subagent starts independently | WORKING | Railway logs: `__AHMED_MODEL_SUBAGENT_STARTUP_ACCEPTANCE__ok` |
 | Dual-temporal live acceptance | Research acceptance | Validate current/stale/historical temporal handling | WORKING | Railway production logs recorded PASSED on current deployment |
-| Model subagent | Agent | Bounded specialist delegation | UNTESTED | provider reports available; no current-turn delegated task test yet |
+| Model subagent | Agent | Bounded specialist delegation | WORKING | final production startup acceptance logged `__AHMED_MODEL_SUBAGENT_STARTUP_ACCEPTANCE__ok` |
 
 ## Freeze Safety Constraints
 
@@ -174,4 +181,6 @@ Architecture boundary remains:
 
 ## Acceptance Rule
 
-This freeze remains active until **Required Production Acceptance = 100%**. A Railway build/deployment marked SUCCESS is not by itself proof that production behavior passes acceptance.
+Required Production Acceptance reached **100%** on 2026-09-24: all ten external functional cases passed, unauthenticated MCP access was rejected with HTTP 401, CI passed, and the accepted Railway deployment reached SUCCESS.
+
+**STABILIZATION PASSED**
