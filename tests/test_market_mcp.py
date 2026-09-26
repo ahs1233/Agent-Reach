@@ -170,3 +170,44 @@ def test_oanda_requires_secret_configuration(monkeypatch) -> None:
         assert "OANDA is not configured" in str(exc)
     else:
         raise AssertionError("expected missing OANDA configuration to fail")
+
+
+
+def test_oanda_discovers_single_account_from_token(monkeypatch) -> None:
+    monkeypatch.setenv("OANDA_API_TOKEN", "secret-token")
+    monkeypatch.delenv("OANDA_ACCOUNT_ID", raising=False)
+
+    def fake_get(url, **kwargs):
+        if url.endswith("/v3/accounts"):
+            headers = kwargs.get("headers") or {}
+            assert headers["Authorization"] == "Bearer secret-token"
+            return _Response({"accounts": [{"id": "101-001-123"}]})
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(market_mcp.requests, "get", fake_get)
+    assert market_mcp._oanda_account_id() == "101-001-123"
+
+
+def test_oanda_requires_explicit_account_when_token_has_multiple(monkeypatch) -> None:
+    monkeypatch.setenv("OANDA_API_TOKEN", "secret-token")
+    monkeypatch.delenv("OANDA_ACCOUNT_ID", raising=False)
+
+    def fake_get(url, **kwargs):
+        if url.endswith("/v3/accounts"):
+            return _Response(
+                {
+                    "accounts": [
+                        {"id": "101-001-123"},
+                        {"id": "101-001-456"},
+                    ]
+                }
+            )
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(market_mcp.requests, "get", fake_get)
+    try:
+        market_mcp._oanda_account_id()
+    except RuntimeError as exc:
+        assert "multiple accounts" in str(exc)
+    else:
+        raise AssertionError("expected multi-account token to require OANDA_ACCOUNT_ID")
