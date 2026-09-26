@@ -11,6 +11,10 @@ from urllib.parse import urlencode, urlsplit
 
 from .auth import AuthConfig, AuthMiddleware
 from .gateway import AhmedToolboxGateway, RemoteMCPError
+from .market_mcp import auth_token as market_auth_token
+from .market_mcp import call_tool as call_market_tool
+from .market_mcp import enabled as market_enabled
+from .market_mcp import tool_specs as market_tool_specs
 from .oauth import AhmedOAuthProvider, OAuthConfig, OAuthProtocolError, parse_form_body
 
 _MAX_REQUEST_BYTES = 1024 * 1024
