@@ -42,6 +42,17 @@ def _rpc_result(req_id: Any, result: Any) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
 
+def _market_initialize_result(params: dict[str, Any]) -> dict[str, Any]:
+    requested = params.get("protocolVersion")
+    return {
+        "protocolVersion": (
+            requested if requested in _PROTOCOL_VERSIONS else _PROTOCOL_VERSIONS[-1]
+        ),
+        "capabilities": {"tools": {"listChanged": False}},
+        "serverInfo": {"name": "AHS Market Data MCP", "version": "0.1.0"},
+    }
+
+
 def _rpc_error(req_id: Any, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
 
@@ -126,8 +137,26 @@ class ToolboxRequestHandler(BaseHTTPRequestHandler):
             )
         }
 
+    def _authorize_market_request(self) -> bool:
+        if not market_enabled():
+            self._send_json(404, {"status": "market_mcp_disabled"})
+            return False
+        configured = market_auth_token()
+        if not configured or self._bearer_token() == configured:
+            return True
+        self._send_json(
+            401,
+            {
+                "error": "invalid_token",
+                "error_description": "Authorization required for AHS Market Data MCP",
+            },
+        )
+        return False
+
     def _authorize_request(self) -> bool:
         path = self._normalized_path()
+        if path == "/market-mcp":
+            return self._authorize_market_request()
         if path in {
             "/.well-known/oauth-protected-resource",
             "/.well-known/oauth-protected-resource/mcp",
@@ -307,7 +336,7 @@ class ToolboxRequestHandler(BaseHTTPRequestHandler):
                 return
             self._send_html(200, provider.authorization_form(params))
             return
-        if path in {"", "/", "/mcp"}:
+        if path in {"", "/", "/mcp", "/market-mcp"}:
             self.send_response(405)
             self.send_header("Allow", "POST")
             self.send_header("Content-Length", "0")
@@ -316,12 +345,119 @@ class ToolboxRequestHandler(BaseHTTPRequestHandler):
             return
         self._send_json(404, {"status": "not_found"})
 
+    def _handle_market_mcp(self) -> None:
+        protocol = self.headers.get("MCP-Protocol-Version")
+        if protocol is not None and protocol not in _PROTOCOL_VERSIONS:
+            self._send_json(
+                400,
+                _rpc_error(None, -32600, "unsupported MCP protocol version"),
+            )
+            return
+
+        payload = self._read_json_body()
+        if payload is None:
+            return
+        method = payload.get("method")
+        req_id = payload.get("id")
+        params = payload.get("params") or {}
+        if not isinstance(params, dict):
+            self._send_json(
+                400,
+                _rpc_error(req_id, -32602, "params must be an object"),
+            )
+            return
+
+        if method in {"initialize", "tools/list"}:
+            print(
+                json.dumps({"event": "market_mcp_discovery", "method": method}),
+                flush=True,
+            )
+
+        if (
+            req_id is None
+            and isinstance(method, str)
+            and method.startswith("notifications/")
+        ):
+            self.send_response(202)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
+
+        if method == "initialize":
+            self._send_json(
+                200,
+                _rpc_result(req_id, _market_initialize_result(params)),
+            )
+            return
+        if method == "ping":
+            self._send_json(200, _rpc_result(req_id, {}))
+            return
+        if method == "tools/list":
+            self._send_json(
+                200,
+                _rpc_result(req_id, {"tools": market_tool_specs()}),
+            )
+            return
+        if method == "tools/call":
+            name = str(params.get("name") or "")
+            arguments = params.get("arguments") or {}
+            if not isinstance(arguments, dict):
+                self._send_json(
+                    200,
+                    _rpc_error(req_id, -32602, "arguments must be an object"),
+                )
+                return
+            try:
+                result = call_market_tool(name, arguments)
+                tool_result = {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                result,
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ),
+                        }
+                    ],
+                    "isError": False,
+                }
+            except Exception as exc:  # noqa: BLE001
+                tool_result = {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                {
+                                    "error": type(exc).__name__,
+                                    "message": str(exc),
+                                },
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ),
+                        }
+                    ],
+                    "isError": True,
+                }
+            self._send_json(200, _rpc_result(req_id, tool_result))
+            return
+
+        self._send_json(
+            200,
+            _rpc_error(req_id, -32601, f"unsupported method: {method}"),
+        )
+
     def do_POST(self) -> None:  # noqa: N802
         if not self._authorize_request():
             return
 
         path = self._normalized_path()
         provider = self.oauth_provider
+
+        if path == "/market-mcp":
+            self._handle_market_mcp()
+            return
 
         if path == "/oauth/register":
             if provider is None:
