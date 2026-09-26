@@ -85,14 +85,42 @@ def _oanda_base_url() -> str:
     )
 
 
-def _oanda_config() -> tuple[str, str]:
+def _oanda_token() -> str:
     token = os.environ.get("OANDA_API_TOKEN", "").strip()
-    account_id = os.environ.get("OANDA_ACCOUNT_ID", "").strip()
-    if not token or not account_id:
-        raise RuntimeError(
-            "OANDA is not configured: set OANDA_API_TOKEN and OANDA_ACCOUNT_ID"
-        )
-    return token, account_id
+    if not token:
+        raise RuntimeError("OANDA is not configured: set OANDA_API_TOKEN")
+    return token
+
+
+def _oanda_authorization_headers() -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {_oanda_token()}",
+        "Accept-Datetime-Format": "RFC3339",
+    }
+
+
+def _oanda_account_id() -> str:
+    configured = os.environ.get("OANDA_ACCOUNT_ID", "").strip()
+    if configured:
+        return configured
+
+    data = _get_json(
+        f"{_oanda_base_url()}/v3/accounts",
+        headers=_oanda_authorization_headers(),
+    )
+    accounts = data.get("accounts") or []
+    ids = [
+        str(item.get("id") or "").strip()
+        for item in accounts
+        if isinstance(item, dict) and item.get("id")
+    ]
+    if len(ids) == 1:
+        return ids[0]
+    if not ids:
+        raise RuntimeError("OANDA token returned no accessible accounts")
+    raise RuntimeError(
+        "OANDA token has multiple accounts: set OANDA_ACCOUNT_ID explicitly"
+    )
 
 
 def tool_specs() -> list[dict[str, Any]]:
@@ -201,10 +229,13 @@ def health() -> dict[str, Any]:
         "status": "ok",
         "enabled": enabled(),
         "okx": True,
-        "oanda_configured": bool(
+        "oanda_token_configured": bool(
             os.environ.get("OANDA_API_TOKEN", "").strip()
-            and os.environ.get("OANDA_ACCOUNT_ID", "").strip()
         ),
+        "oanda_account_configured": bool(
+            os.environ.get("OANDA_ACCOUNT_ID", "").strip()
+        ),
+        "oanda_environment": os.environ.get("OANDA_ENV", "practice").strip().lower(),
         "auth_enabled": bool(auth_token()),
         "max_lookback": _MAX_LOOKBACK,
         "max_returned_tail": _MAX_RETURNED_TAIL,
@@ -344,14 +375,7 @@ def _okx_orderbook(symbol: str, depth: int) -> dict[str, Any]:
 
 
 def _oanda_headers() -> tuple[dict[str, str], str]:
-    token, account_id = _oanda_config()
-    return (
-        {
-            "Authorization": f"Bearer {token}",
-            "Accept-Datetime-Format": "RFC3339",
-        },
-        account_id,
-    )
+    return _oanda_authorization_headers(), _oanda_account_id()
 
 
 def _oanda_snapshot(instrument: str) -> dict[str, Any]:
