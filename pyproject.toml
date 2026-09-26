@@ -39,10 +39,12 @@ dependencies = [
 
 [project.optional-dependencies]
 browser = ["playwright>=1.40"]
+interactive-browser = ["browser-use>=0.13.10,<1.0; python_version >= '3.11'"]
 cookies = ["browser-cookie3>=0.19"]
-all = ["playwright>=1.40", "mcp[cli]>=1.0", "browser-cookie3>=0.19"]
+all = ["playwright>=1.40", "mcp[cli]>=1.0", "browser-cookie3>=0.19", "browser-use>=0.13.10,<1.0; python_version >= '3.11'"]
 dev = [
     "pytest>=8.0",
+    "pytest-cov==7.1.0",
     "ruff>=0.8",
     "mypy>=1.12",
     "types-requests>=2.32",
@@ -51,6 +53,7 @@ dev = [
 
 [project.scripts]
 agent-reach = "agent_reach.cli:main"
+ahmed-toolbox = "agent_reach.toolbox.server:main"
 
 [project.urls]
 Homepage = "https://github.com/Panniantong/agent-reach"
