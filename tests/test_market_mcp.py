@@ -47,21 +47,23 @@ def test_okx_snapshot(monkeypatch) -> None:
         {"provider": "okx", "symbol": "BTC-USDT"},
     )
     assert result["provider"] == "okx"
-    assert result["last"] == "100"
-    assert result["bid"] == "99"
-    assert result["ask"] == "101"
+    assert result["last"] == 100.0
+    assert result["bid"] == 99.0
+    assert result["ask"] == 101.0
 
 
-def test_okx_candles_are_chronological(monkeypatch) -> None:
-    def fake_get(*args, **kwargs):
-        return _Response(
-            {
-                "data": [
-                    ["2000", "2", "4", "1", "3", "20", "0", "0", "1"],
-                    ["1000", "1", "3", "0", "2", "10", "0", "0", "1"],
-                ]
-            }
-        )
+def test_okx_candles_are_chronological_and_compact(monkeypatch) -> None:
+    def fake_get(url, **kwargs):
+        if url.endswith("/market/candles"):
+            return _Response(
+                {
+                    "data": [
+                        ["2000", "2", "4", "1", "3", "20", "0", "0", "0"],
+                        ["1000", "1", "3", "0", "2", "10", "0", "0", "1"],
+                    ]
+                }
+            )
+        raise AssertionError(f"unexpected URL: {url}")
 
     monkeypatch.setattr(market_mcp.requests, "get", fake_get)
     result = market_mcp.call_tool(
@@ -73,7 +75,86 @@ def test_okx_candles_are_chronological(monkeypatch) -> None:
             "limit": 2,
         },
     )
-    assert [item["t"] for item in result["candles"]] == [1000, 2000]
+    assert result["columns"] == ["t", "o", "h", "l", "c", "v", "closed"]
+    assert [item[0] for item in result["candles"]] == [1000, 2000]
+    assert result["candles"][-1][-1] is False
+    assert result["indicators"]["forming_candle"]["t"] == 2000
+
+
+def test_okx_lookback_paginates_history(monkeypatch) -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_get(url, **kwargs):
+        params = kwargs.get("params") or {}
+        calls.append((url, params))
+        if url.endswith("/market/candles"):
+            rows = [
+                [str(ts), "1", "2", "0", str(ts / 1000), "1", "0", "0", "1"]
+                for ts in (5000, 4000, 3000)
+            ]
+            return _Response({"data": rows})
+        if url.endswith("/market/history-candles"):
+            rows = [
+                [str(ts), "1", "2", "0", str(ts / 1000), "1", "0", "0", "1"]
+                for ts in (2000, 1000)
+            ]
+            return _Response({"data": rows})
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(market_mcp.requests, "get", fake_get)
+    rows = market_mcp._okx_candle_rows("BTC-USDT", "M1", 5)
+
+    assert [item["t"] for item in rows] == [1000, 2000, 3000, 4000, 5000]
+    history_calls = [item for item in calls if item[0].endswith("history-candles")]
+    assert history_calls
+    assert history_calls[0][1]["after"] == "3000"
+
+
+def test_compact_packet_calculates_local_indicators() -> None:
+    candles = []
+    for index in range(1, 1201):
+        close = 100.0 + (index * 0.1)
+        candles.append(
+            {
+                "t": index,
+                "o": close - 0.05,
+                "h": close + 0.2,
+                "l": close - 0.2,
+                "c": close,
+                "v": 10.0,
+                "closed": index != 1200,
+            }
+        )
+
+    result = market_mcp._compact_packet(
+        "okx",
+        "BTC-USDT",
+        "M1",
+        candles,
+        lookback=1200,
+        tail=200,
+    )
+
+    assert result["analysis_candles"] == 1200
+    assert result["returned_candles"] == 200
+    assert result["indicators"]["sma"]["1000"] is not None
+    assert result["indicators"]["ema"]["1000"] is not None
+    assert result["indicators"]["rsi14"] == 100.0
+    assert result["indicators"]["forming_candle"]["t"] == 1200
+
+
+def test_default_window_supports_ma1000() -> None:
+    lookback, tail = market_mcp._resolve_candle_window({})
+    assert lookback == 1200
+    assert tail == 200
+
+
+def test_window_is_bounded() -> None:
+    lookback, tail = market_mcp._resolve_candle_window(
+        {"lookback": 99999, "tail": 99999}
+    )
+    assert lookback == 2000
+    assert tail == 500
 
 
 def test_oanda_requires_secret_configuration(monkeypatch) -> None:
