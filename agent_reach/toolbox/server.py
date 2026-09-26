@@ -7,7 +7,7 @@ import os
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from .auth import AuthConfig, AuthMiddleware
 from .gateway import AhmedToolboxGateway, RemoteMCPError
@@ -161,6 +161,11 @@ class ToolboxRequestHandler(BaseHTTPRequestHandler):
         path = self._normalized_path()
         if path == "/market-mcp":
             return self._authorize_market_request()
+        if path == "/market-api" or path.startswith("/market-api/"):
+            if not market_enabled():
+                self._send_json(404, {"status": "market_api_disabled"})
+                return False
+            return True
         if path in {
             "/.well-known/oauth-protected-resource",
             "/.well-known/oauth-protected-resource/mcp",
@@ -315,10 +320,127 @@ class ToolboxRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def _market_api_query(self) -> dict[str, str]:
+        raw = parse_qs(urlsplit(self.path).query, keep_blank_values=False)
+        return {
+            key: values[-1]
+            for key, values in raw.items()
+            if values
+        }
+
+    def _handle_market_api_get(self, path: str) -> bool:
+        if path not in {
+            "/market-api",
+            "/market-api/",
+            "/market-api/health",
+            "/market-api/capabilities",
+            "/market-api/snapshot",
+            "/market-api/candles",
+            "/market-api/orderbook",
+        }:
+            return False
+
+        if path in {"/market-api", "/market-api/", "/market-api/capabilities"}:
+            self._send_json(
+                200,
+                {
+                    "service": "AHS Market Data API",
+                    "version": "1.0",
+                    "mode": "read-only",
+                    "providers": ["okx", "oanda"],
+                    "endpoints": {
+                        "snapshot": "/market-api/snapshot?provider=okx&symbol=BTC-USDT",
+                        "candles": (
+                            "/market-api/candles?provider=okx&symbol=BTC-USDT"
+                            "&timeframe=M1&lookback=1200&tail=200"
+                        ),
+                        "orderbook": (
+                            "/market-api/orderbook?symbol=BTC-USDT&depth=20"
+                        ),
+                    },
+                    "limits": {
+                        "max_lookback": 2000,
+                        "max_returned_tail": 500,
+                        "max_orderbook_depth": 100,
+                    },
+                    "notes": [
+                        "No trading, transfer, withdrawal, or account-write actions.",
+                        "OANDA credentials remain server-side and are never returned.",
+                        "Candles include locally computed technical indicators.",
+                    ],
+                },
+            )
+            return True
+
+        if path == "/market-api/health":
+            self._send_json(
+                200,
+                {
+                    "status": "ok",
+                    "service": "ahs-market-data-api",
+                    "market": True,
+                },
+            )
+            return True
+
+        query = self._market_api_query()
+        try:
+            if path == "/market-api/snapshot":
+                result = call_market_tool(
+                    "market_snapshot",
+                    {
+                        "provider": query.get("provider", ""),
+                        "symbol": query.get("symbol", ""),
+                    },
+                )
+            elif path == "/market-api/candles":
+                arguments: dict[str, Any] = {
+                    "provider": query.get("provider", ""),
+                    "symbol": query.get("symbol", ""),
+                    "timeframe": query.get("timeframe", ""),
+                }
+                if "lookback" in query:
+                    arguments["lookback"] = int(query["lookback"])
+                if "tail" in query:
+                    arguments["tail"] = int(query["tail"])
+                if "limit" in query:
+                    arguments["limit"] = int(query["limit"])
+                result = call_market_tool("market_candles", arguments)
+            else:
+                arguments = {
+                    "symbol": query.get("symbol", ""),
+                }
+                if "depth" in query:
+                    arguments["depth"] = int(query["depth"])
+                result = call_market_tool("market_orderbook", arguments)
+        except (ValueError, RuntimeError) as exc:
+            self._send_json(
+                400,
+                {
+                    "error": type(exc).__name__,
+                    "message": str(exc),
+                },
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            self._send_json(
+                502,
+                {
+                    "error": type(exc).__name__,
+                    "message": str(exc),
+                },
+            )
+            return True
+
+        self._send_json(200, result)
+        return True
+
     def do_GET(self) -> None:  # noqa: N802
         if not self._authorize_request():
             return
         path = self._normalized_path()
+        if self._handle_market_api_get(path):
+            return
         if self._serve_oauth_metadata(path):
             return
         if path == "/health":
