@@ -1,0 +1,128 @@
+name: Ahmed ToolBox CI
+
+on:
+  push:
+    branches:
+      - feat/ahmed-toolbox-mcp
+  pull_request:
+    paths:
+      - "agent_reach/**"
+      - "integrations/panwatch/**"
+      - "tests/**"
+      - "scripts/**"
+      - "Dockerfile"
+      - "pyproject.toml"
+      - "docs/AHMED_TOOLBOX_STABILITY_GATE_2026-09-23.md"
+      - "docs/DUAL_TEMPORAL_INTELLIGENCE.md"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
+      - ".github/workflows/ahmed-toolbox-ci.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -c constraints.txt -e ".[dev]"
+
+      - name: Syntax
+        run: |
+          python -m compileall -q agent_reach integrations/panwatch
+          python -m py_compile scripts/dual-temporal-live-acceptance.py
+          python -m py_compile scripts/production_acceptance.py
+          python -m py_compile scripts/auth_lifecycle_acceptance.py
+          sh -n scripts/start-ahmed-toolbox.sh
+
+      - name: Ruff
+        run: |
+          ruff check agent_reach/toolbox
+          ruff check scripts/dual-temporal-live-acceptance.py
+          ruff check scripts/production_acceptance.py
+          ruff check scripts/auth_lifecycle_acceptance.py
+          ruff check agent_reach/toolbox/auth.py agent_reach/toolbox/auth_client.py
+          ruff check tests/test_toolbox_gateway.py tests/test_toolbox_orchestration.py tests/test_toolbox_runtime.py tests/test_toolbox_subagent.py tests/test_runtime_trust_gate.py tests/test_toolbox_browser_use.py tests/test_xau_intraday_integration.py tests/test_toolbox_ace.py
+          ruff check tests/test_research_dual_temporal.py tests/test_dual_temporal_gateway.py tests/test_retrieval_fallback.py
+          ruff check tests/golden tests/test_toolbox_observability.py tests/test_failure_matrix.py
+
+      - name: Ruff format
+        run: |
+          ruff format --check agent_reach/toolbox/observability.py agent_reach/toolbox/retrieval.py
+          ruff format --check scripts/production_acceptance.py
+          ruff format --check scripts/auth_lifecycle_acceptance.py agent_reach/toolbox/auth.py agent_reach/toolbox/auth_client.py tests/test_toolbox_auth_lifecycle.py
+          ruff format --check tests/golden tests/test_toolbox_observability.py tests/test_failure_matrix.py
+
+      - name: Scoped mypy
+        run: mypy agent_reach/toolbox/observability.py agent_reach/toolbox/retrieval.py
+
+      - name: Focused tests
+        run: |
+          pytest -q tests/test_toolbox_server.py tests/test_mcp_http_discovery.py tests/test_toolbox_auth_lifecycle.py
+          pytest -q tests/test_toolbox_gateway.py tests/test_toolbox_orchestration.py tests/test_toolbox_runtime.py tests/test_toolbox_subagent.py tests/test_runtime_trust_gate.py tests/test_toolbox_browser_use.py tests/test_xau_intraday_integration.py tests/test_toolbox_ace.py
+          pytest -q tests/test_research_dual_temporal.py tests/test_dual_temporal_gateway.py tests/test_retrieval_fallback.py
+          pytest -q tests/golden tests/test_toolbox_observability.py tests/test_failure_matrix.py
+
+  full-regression:
+    name: Full regression suite
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -c constraints.txt -e ".[dev]"
+
+      - name: Full pytest regression and coverage baseline
+        run: |
+          pytest -q --cov=agent_reach.toolbox --cov-report=term --cov-report=json:coverage-toolbox.json tests
+          python - <<'PY'
+          import json
+          data = json.load(open("coverage-toolbox.json", encoding="utf-8"))
+          print(f"TOOLBOX_COVERAGE_BASELINE={data['totals']['percent_covered']:.2f}")
+          PY
+
+
+  stress-core:
+    name: Core stress suite
+    needs: full-regression
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -c constraints.txt -e ".[dev]"
+
+      - name: Stress harness lint
+        run: |
+          ruff check scripts/toolbox_stress.py
+          ruff format --check scripts/toolbox_stress.py
+
+      - name: Core stress suite
+        run: python scripts/toolbox_stress.py

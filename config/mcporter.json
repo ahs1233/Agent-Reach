@@ -1,10 +1,9 @@
 {
+  "$schema": "https://raw.githubusercontent.com/openclaw/mcporter/main/mcporter.schema.json",
   "mcpServers": {
     "exa": {
+      "description": "Exa hosted web search MCP",
       "baseUrl": "https://mcp.exa.ai/mcp"
-    },
-    "xiaohongshu": {
-      "baseUrl": "http://localhost:18060/mcp"
     }
   },
   "imports": []
